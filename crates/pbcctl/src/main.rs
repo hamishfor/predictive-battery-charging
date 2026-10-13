@@ -12,10 +12,16 @@ mod selftest;
 #[derive(Parser)]
 #[command(
     name = "pbcctl",
-    version,
+    disable_version_flag = true,
     about = "Predictive battery charging control"
 )]
 struct Cli {
+    /// Print the pbcctl version and the running pbcd's version
+    #[arg(short = 'V', long)]
+    version: bool,
+    /// With --version, ask a development daemon on the session bus
+    #[arg(long, requires = "version")]
+    user: bool,
     /// Use another sysfs root, such as a fake tree for testing
     #[arg(long, global = true, default_value = "/sys")]
     sysfs: PathBuf,
@@ -23,7 +29,7 @@ struct Cli {
     #[arg(long, global = true)]
     profiles: Option<PathBuf>,
     #[command(subcommand)]
-    cmd: Cmd,
+    cmd: Option<Cmd>,
 }
 
 #[derive(Subcommand)]
@@ -247,10 +253,38 @@ fn now_s() -> u64 {
         .as_secs()
 }
 
+/// pbcctl's version, and the running pbcd's. Source builds include the git commit.
+fn print_versions(user_bus: bool) {
+    let ctl = env!("PBC_VERSION");
+    println!("pbcctl {ctl}");
+    match bus::property(user_bus, "Version") {
+        Ok(d) => {
+            println!("pbcd   {d}");
+            if d != ctl {
+                eprintln!("note: pbcctl and pbcd are different builds. After an upgrade or reinstall, restart pbcd: sudo systemctl restart pbcd");
+            }
+        }
+        Err(_) => println!("pbcd   not running"),
+    }
+}
+
 fn main() -> Result<()> {
     let cli = Cli::parse();
+    if cli.version {
+        print_versions(cli.user);
+        return Ok(());
+    }
+    let Some(cmd) = &cli.cmd else {
+        use clap::CommandFactory;
+        Cli::command()
+            .error(
+                clap::error::ErrorKind::MissingSubcommand,
+                "a command is required",
+            )
+            .exit();
+    };
     let root = SysRoot::new(&cli.sysfs);
-    match &cli.cmd {
+    match cmd {
         Cmd::Report { write, user } => report(&cli, *user, write.as_deref())?,
         Cmd::Selftest { only, user, reset } => {
             if *reset {
@@ -450,7 +484,7 @@ fn report(cli: &Cli, user_bus: bool, write: Option<&std::path::Path>) -> Result<
             })
     };
     r.date = date(now_s() as i64);
-    r.pbcctl = env!("CARGO_PKG_VERSION").into();
+    r.pbcctl = env!("PBC_VERSION").into();
     let versions = [
         ("kernel", cmd("uname", &["-r"])),
         (

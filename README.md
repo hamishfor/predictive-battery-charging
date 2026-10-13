@@ -1,5 +1,10 @@
 # Predictive Battery Charging for Linux
 
+[![CI](https://github.com/hamishfor/predictive-battery-charging/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/hamishfor/predictive-battery-charging/actions/workflows/ci.yml)
+[![Release](https://github.com/hamishfor/predictive-battery-charging/actions/workflows/release.yml/badge.svg)](https://github.com/hamishfor/predictive-battery-charging/actions/workflows/release.yml)
+[![Latest release](https://img.shields.io/github/v/release/hamishfor/predictive-battery-charging?include_prereleases)](https://github.com/hamishfor/predictive-battery-charging/releases/latest)
+[![License: GPL v3+](https://img.shields.io/badge/license-GPL--3.0--or--later-blue)](LICENSE)
+
 The battery health tooling for Linux is crude, Gnome's own tooling just holds the battery at 80%, you can switch profiles to then fully charge, but you have to;
 - Remember to select fully charge 30 minutes before you intend to unplug.
 - Remember to return the setting afterwards. 
@@ -87,12 +92,19 @@ Prerequisites:
 
 The runtime needs in [Requirements](#requirements) apply too.
 
+Install the pre-reqs
+```sh
+sudo apt install cargo rustc git build-essential
+```
+
+Clone the repo.
+
 ```sh
 git clone https://github.com/hamishfor/predictive-battery-charging.git
 cd predictive-battery-charging
 ```
 
-Build and install
+Build and install.
 
 ```sh
 cargo build --release
@@ -140,6 +152,7 @@ Then run `sudo systemctl restart pbcd` or reboot.
 
 | Command | What it does | Needs |
 |---|---|---|
+| `pbcctl --version` | pbcctl's version and the running pbcd's. A build from source adds the git commit, such as `0.1.0 (git b288395)`. `--user` asks a development pbcd. | |
 | `pbcctl probe` | Laptop identity, the matched profile and its accepted limits, each battery, sleep states and RTC wake | |
 | `pbcctl status` | Each battery's charge, status, power and limits, plus the combined charge | |
 | `pbcctl daemon` | pbcd's full status as JSON: state, prediction, hold level, alerts, self-checks. `--sessions N` adds the last N days of plug-in sessions. | pbcd running |

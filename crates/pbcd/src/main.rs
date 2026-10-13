@@ -22,7 +22,7 @@ use std::time::Duration;
 use tokio::sync::{Mutex, Notify};
 
 #[derive(Parser)]
-#[command(name = "pbcd", version, about = "Predictive battery charging daemon")]
+#[command(name = "pbcd", version = env!("PBC_VERSION"), about = "Predictive battery charging daemon")]
 struct Args {
     /// Config file
     #[arg(long, default_value = "/etc/pbcd/config.toml")]

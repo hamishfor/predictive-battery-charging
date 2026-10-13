@@ -16,7 +16,8 @@ OUT=dist-out
 STAGE=$(mktemp -d)
 trap 'rm -rf "$STAGE"' EXIT
 
-cargo build --release --locked
+# A packaged build reports its plain version, without the git commit.
+PBC_RELEASE=1 cargo build --release --locked
 mkdir -p "$OUT"
 
 # The extension zip, for gnome-extensions install and extensions.gnome.org.

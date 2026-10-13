@@ -15,14 +15,23 @@ jobs:
       - uses: actions/checkout@v4
       - name: Install tools
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends cargo rustc gjs zip
+      # v0.1.0 or a pre-release such as v0.1.0-alpha, for Cargo.toml version 0.1.0.
       - name: Check the tag matches Cargo.toml
         run: |
           want=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
-          [ "${GITHUB_REF_NAME#v}" = "$want" ] || { echo "Tag $GITHUB_REF_NAME doesn't match Cargo.toml version $want" >&2; exit 1; }
+          tag=${GITHUB_REF_NAME#v}
+          case "$tag" in
+            "$want") ;;
+            "$want"-*) echo "PRERELEASE=--prerelease" >> "$GITHUB_ENV" ;;
+            *) echo "Tag $GITHUB_REF_NAME doesn't match Cargo.toml version $want" >&2; exit 1 ;;
+          esac
       - run: cargo test --locked
       - run: gjs -m extension/tests/status-test.js
       - name: Build
-        run: VERSION=${GITHUB_REF_NAME#v} packaging/build-deb.sh
+        # A pre-release becomes 0.1.0~alpha, which Debian sorts before 0.1.0.
+        run: |
+          tag=${GITHUB_REF_NAME#v}
+          VERSION=${tag/-/\~} packaging/build-deb.sh
       - name: Check the package installs
         run: |
           sudo apt-get install -y ./dist-out/*.deb
@@ -33,4 +42,4 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release create "$GITHUB_REF_NAME" dist-out/*.deb dist-out/*.zip \
-            --title "$GITHUB_REF_NAME" --generate-notes --verify-tag
+            --title "$GITHUB_REF_NAME" --generate-notes --verify-tag $PRERELEASE

@@ -215,7 +215,7 @@ impl Api {
 
     #[zbus(property)]
     async fn version(&self) -> String {
-        env!("CARGO_PKG_VERSION").into()
+        env!("PBC_VERSION").into()
     }
 }
 

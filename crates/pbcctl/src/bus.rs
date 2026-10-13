@@ -30,6 +30,29 @@ pub fn call(user_bus: bool, method: &str, args: &[&str]) -> Result<String> {
     Ok(v["data"][0].as_str().unwrap_or_default().to_string())
 }
 
+/// Read a string property of pbcd, such as "Version".
+pub fn property(user_bus: bool, name: &str) -> Result<String> {
+    let mut c = std::process::Command::new("busctl");
+    if user_bus {
+        c.arg("--user");
+    }
+    c.args([
+        "--json=short",
+        "get-property",
+        "org.pbc.Daemon1",
+        "/org/pbc/Daemon1",
+        "org.pbc.Daemon1",
+        name,
+    ]);
+    let out = c.output().context("running busctl")?;
+    if !out.status.success() {
+        bail!("{}", String::from_utf8_lossy(&out.stderr).trim());
+    }
+    // busctl --json gives {"type":"s","data":"<value>"}
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout)?;
+    Ok(v["data"].as_str().unwrap_or_default().to_string())
+}
+
 pub fn status(user_bus: bool) -> Result<serde_json::Value> {
     Ok(serde_json::from_str(&call(user_bus, "StatusJson", &[])?)?)
 }
