@@ -1,0 +1,112 @@
+#!/bin/bash
+# M0 spike 06: quiet maintenance wake ("nested suspend"). Production hook: crates/pbcd/src/bin/pbcd-sleep-hook.rs.
+# Installed into /usr/lib/systemd/system-sleep/ by spike/06-quiet-wake.sh.
+#
+# systemd-sleep runs this with $1=pre|post and $2=suspend|hibernate|...
+# The post phase runs while user.slice (GNOME, PipeWire, apps) is still frozen.
+# If this wake is provably ours, we write the thresholds and suspend the kernel
+# again without returning, so user space never thaws. In every other case we
+# exit 0 at once and the system resumes exactly as it normally would.
+#
+# It touches only: charge thresholds, the RTC wake alarm, /sys/power/state.
+
+RUN=/run/pbc-spike
+PLAN=$RUN/plan
+LOG=@OUT@/spike.log
+PBC=@PBC@
+RTC=/sys/class/rtc/rtc0/wakealarm
+AWAKE_CAP_S=30          # total awake time this hook may spend per sleep
+ACTION_TIMEOUT_S=5      # hard deadline for the threshold write
+SETTLE_MS=3000          # min time from kernel resume to re-suspend (late lid events, power_supply events from our write)
+POST_START_MS=600       # measured delay from kernel resume to post hook start (06A)
+
+[ "$2" = suspend ] || exit 0
+[ -f "$PLAN" ] || exit 0
+# shellcheck disable=SC1090
+. "$PLAN"               # WAKE_AT START END HOLD_SECS HANG
+HOLD_SECS=${HOLD_SECS:-0}
+
+ts()     { date +%s.%N; }
+log()    { echo "[$(date -Is)] 06 hook: $*" >> "$LOG"; echo "<6>pbc-hook: $*" > /dev/kmsg 2>/dev/null; }
+snap()   { for w in /sys/class/wakeup/wakeup*; do echo "${w##*/} $(cat "$w/name") $(cat "$w/event_count")"; done; }
+lid()    { awk '{print $2}' /proc/acpi/button/lid/*/state 2>/dev/null; }
+frozen() { awk '$1=="frozen"{print $2}' /sys/fs/cgroup/user.slice/cgroup.events 2>/dev/null; }
+ms()     { awk -v a="$1" -v b="$2" 'BEGIN{printf "%d", (b-a)*1000}'; }
+# Wakeup sources whose event_count changed since the baseline snapshot.
+changed() { awk 'NR==FNR{a[$1]=$3;next} ($1 in a) && $3!=a[$1] {printf "%s(+%d) ", $2, $3-a[$1]}' "$RUN/snap" <(snap); }
+
+normal_resume() {
+    echo 0 > "$RTC" 2>/dev/null
+    log "normal resume: $*"
+    exit 0
+}
+
+if [ "$1" = pre ]; then
+    snap > "$RUN/snap"
+    if [ ! -f "$RUN/done" ] && [ "$WAKE_AT" -gt "$(date +%s)" ]; then
+        echo 0 > "$RTC"; echo "$WAKE_AT" > "$RTC"
+        log "pre: rtc armed for $(date -d "@$WAKE_AT" +%T)"
+    fi
+    exit 0
+fi
+[ "$1" = post ] || exit 0
+
+awake_ms=0
+while :; do
+    t0=$(ts)
+    now=$(date +%s)
+    ch=$(changed)
+    # Only the RTC is benign at this point. Test 06A showed that opening the lid
+    # wakes the kernel through AC/USB-C (UCSI) events, and the lid state itself
+    # reads "closed" for about 3 s. So any power-supply event here means
+    # "possibly the user". Every other source, including unknown ones, counts
+    # as a user wake. That is the fail-safe direction.
+    others=$(tr ' ' '\n' <<<"$ch" | grep -Ev '^(rtc_cmos|alarmtimer[^(]*)\(' | grep . | tr '\n' ' ')
+    l=$(lid)
+    log "post: lid=$l user.slice.frozen=$(frozen) wake_sources=[${ch% }] t-wake=$((now - WAKE_AT))s"
+
+    # Proof that this wake is ours. Anything else gets a normal resume.
+    [ -f "$RUN/done" ]                  && normal_resume "maintenance already done this sleep"
+    [ "$now" -ge $((WAKE_AT - 5)) ] && [ "$now" -le $((WAKE_AT + 60)) ] \
+                                        || normal_resume "not at scheduled time"
+    grep -Eq 'rtc_cmos|alarmtimer' <<<"$ch" || normal_resume "RTC did not fire"
+    [ -z "$others" ]                    || normal_resume "other wake sources: ${others% }"
+    [ "$l" = closed ]                   || normal_resume "lid is $l"
+
+    touch "$RUN/done"
+    act="$PBC set --start $START --end $END"
+    [ "${HANG:-0}" = 1 ] && act="sleep 60"      # test G: simulate a hung write
+    if ! out=$(timeout "$ACTION_TIMEOUT_S" $act 2>&1); then
+        normal_resume "threshold write failed or timed out: $out"
+    fi
+    log "our wake: $out"
+
+    # Test C only: hold the window open and watch the lid.
+    if [ "$HOLD_SECS" -gt 0 ]; then
+        end=$(( $(date +%s) + HOLD_SECS ))
+        while [ "$(date +%s)" -lt "$end" ]; do
+            [ "$(lid)" = closed ] || normal_resume "lid opened during hold window (poll latency <=100ms)"
+            sleep 0.1
+        done
+    fi
+
+    # Wait until 3 s after kernel resume, so a late lid event can arrive
+    # (06A: about 3 s between resume and "Lid opened"). Poll the lid meanwhile.
+    while [ "$(ms "$t0" "$(ts)")" -lt $((SETTLE_MS - POST_START_MS)) ]; do
+        [ "$(lid)" = closed ] || normal_resume "lid opened during settle window"
+        sleep 0.1
+    done
+
+    # Race-free re-suspend: the kernel's wakeup_count handshake.
+    snap > "$RUN/snap"
+    # This read blocks while wakeup events are in flight, so bound it.
+    wc=$(timeout 3 cat /sys/power/wakeup_count) || normal_resume "wakeup_count read failed or blocked"
+    [ "$(lid)" = closed ]               || normal_resume "lid opened before re-suspend"
+    echo "$wc" > /sys/power/wakeup_count 2>/dev/null \
+                                        || normal_resume "wakeup event during window (handshake refused)"
+    awake_ms=$(( awake_ms + $(ms "$t0" "$(ts)") ))
+    [ "$awake_ms" -lt $((AWAKE_CAP_S * 1000)) ] || normal_resume "awake cap reached (${awake_ms}ms)"
+    log "re-suspending (awake ${awake_ms}ms total)"
+    echo mem > /sys/power/state 2>/dev/null || normal_resume "kernel refused suspend (wakeup pending)"
+    # Execution continues here after the next kernel resume. Loop to re-check it.
+done

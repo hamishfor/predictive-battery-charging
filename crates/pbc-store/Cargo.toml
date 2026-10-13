@@ -1,0 +1,15 @@
+[package]
+name = "pbc-store"
+description = "On-device SQLite store for samples, events and plug sessions"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+pbc-model = { path = "../pbc-model" }
+rusqlite.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

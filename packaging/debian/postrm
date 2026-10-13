@@ -1,0 +1,12 @@
+#!/bin/sh
+set -e
+case "$1" in
+  remove)
+    rm -rf /run/pbcd
+    systemctl daemon-reload || true
+    ;;
+  purge)
+    rm -rf /run/pbcd /var/lib/pbcd /etc/pbcd
+    systemctl daemon-reload || true
+    ;;
+esac

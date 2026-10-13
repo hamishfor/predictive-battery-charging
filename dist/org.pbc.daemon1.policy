@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE policyconfig PUBLIC "-//freedesktop//DTD PolicyKit Policy Configuration 1.0//EN"
+ "http://www.freedesktop.org/standards/PolicyKit/1/policyconfig.dtd">
+<!-- Install to /usr/share/polkit-1/actions/ -->
+<policyconfig>
+  <vendor>Predictive battery charging</vendor>
+  <action id="org.pbc.daemon1.charge-now">
+    <description>Charge the battery to full now</description>
+    <message>Authentication is required to override predictive charging</message>
+    <defaults>
+      <!-- Same as UPower's charge limit toggle: the active local user needs no password. -->
+      <allow_any>auth_admin</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>yes</allow_active>
+    </defaults>
+  </action>
+  <action id="org.pbc.daemon1.selftest">
+    <description>Save Predictive Battery Charging self-test results</description>
+    <message>Authentication is required to save self-test results</message>
+    <defaults>
+      <allow_any>auth_admin</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>auth_admin_keep</allow_active>
+    </defaults>
+  </action>
+</policyconfig>

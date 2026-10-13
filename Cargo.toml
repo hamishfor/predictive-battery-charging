@@ -1,0 +1,31 @@
+[workspace]
+resolver = "2"
+members = ["crates/pbc-hw", "crates/pbc-model", "crates/pbc-store", "crates/pbcd", "crates/pbcctl"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-or-later"
+rust-version = "1.89"
+
+[workspace.dependencies]
+anyhow = "1"
+thiserror = "2"
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+clap = { version = "4", features = ["derive"] }
+tempfile = "3"
+serde_json = "1"
+serde_norway = "0.9"
+jiff = "0.2"
+rusqlite = { version = "0.40", features = ["bundled"] }
+zbus = { version = "5", default-features = false, features = ["tokio"] }
+tokio = { version = "1", features = ["rt", "macros", "time", "signal", "sync"] }
+futures-util = "0.3"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[profile.release]
+# A small daemon, shipped in a .deb: strip symbols, and let LTO trim the binaries.
+strip = true
+lto = "thin"

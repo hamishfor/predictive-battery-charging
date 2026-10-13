@@ -1,0 +1,20 @@
+Package: predictive-battery-charging
+Version: @VERSION@
+Architecture: @ARCH@
+Maintainer: Hamish Forbes <hamishfor@users.noreply.github.com>
+Installed-Size: @SIZE@
+Depends: libc6 (>= 2.39), systemd, dbus, polkitd
+Recommends: upower
+Suggests: gnome-shell (>= 48)
+Section: admin
+Priority: optional
+Homepage: https://github.com/hamishfor/predictive-battery-charging
+Description: Predictive battery charging for Linux laptops
+ Holds the battery below full while plugged in, and finishes charging shortly
+ before you usually unplug, like macOS Optimized Battery Charging. It learns
+ your routine from plug-in history, which stays on the laptop.
+ .
+ pbcd writes the kernel's standard charge-limit files on laptops with a
+ matching hardware profile (ThinkPads to start with). On other laptops it only
+ records charging activity. Includes the pbcctl command and a GNOME Quick
+ Settings tile.

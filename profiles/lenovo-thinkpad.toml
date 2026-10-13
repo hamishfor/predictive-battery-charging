@@ -1,0 +1,39 @@
+# Lenovo ThinkPad charge-control profile.
+# The embedded controller enforces the thresholds. They stay in effect through
+# suspend, hibernate and power off.
+id = "lenovo-thinkpad"
+name = "Lenovo ThinkPad (thinkpad_acpi)"
+
+[match]
+sys_vendor = ["LENOVO"]
+product_version_contains = ["ThinkPad"]
+kernel_module = "thinkpad_acpi"
+
+# Every present battery with threshold files is controlled, apart from
+# peripheral batteries. Power Bridge models have BAT0 (internal) and BAT1 (rear).
+[thresholds]
+start_min = 0      # 0 = firmware default (always start charging)
+start_max = 99
+end_min = 1
+end_max = 100      # 100 = firmware default (charge to full)
+min_gap = 1        # the firmware rejects start >= end
+persists_poweroff = true   # tested on the X1 Carbon Gen 13
+
+[behaviour]
+supported = ["auto", "inhibit-charge", "force-discharge"]
+
+[defaults]
+hold_end = 80
+hold_start = 75
+
+[quiet_wake]
+# Models where the quiet wake is known to work, by product_version.
+# With quiet_wake = "auto", pbcd uses it on these models from the start.
+# On other models it waits for a guided selftest, and stops after any failure.
+validated = ["ThinkPad X1 Carbon Gen 13"]
+
+[battery_labels]
+# On two-battery (Power Bridge) models, BAT0 is internal and BAT1 is the
+# swappable rear battery. Labels are shown only when both are present.
+BAT0 = "Internal"
+BAT1 = "Rear"

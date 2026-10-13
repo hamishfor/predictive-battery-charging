@@ -1,0 +1,36 @@
+name: Release
+
+# Push a tag such as v0.1.0 to build the .deb and the extension zip and publish a release.
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-26.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install tools
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends cargo rustc gjs zip
+      - name: Check the tag matches Cargo.toml
+        run: |
+          want=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          [ "${GITHUB_REF_NAME#v}" = "$want" ] || { echo "Tag $GITHUB_REF_NAME doesn't match Cargo.toml version $want" >&2; exit 1; }
+      - run: cargo test --locked
+      - run: gjs -m extension/tests/status-test.js
+      - name: Build
+        run: VERSION=${GITHUB_REF_NAME#v} packaging/build-deb.sh
+      - name: Check the package installs
+        run: |
+          sudo apt-get install -y ./dist-out/*.deb
+          pbcctl --version
+          systemctl cat pbcd.service >/dev/null
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" dist-out/*.deb dist-out/*.zip \
+            --title "$GITHUB_REF_NAME" --generate-notes --verify-tag

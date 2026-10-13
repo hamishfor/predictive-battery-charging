@@ -1,0 +1,12 @@
+#!/bin/sh
+set -e
+if [ "$1" = configure ]; then
+  systemctl daemon-reload || true
+  # Pick up the new bus policy before the service claims its name.
+  systemctl reload dbus 2>/dev/null || true
+  systemctl enable pbcd.service || true
+  # Restart, so an upgrade runs the new daemon.
+  systemctl restart pbcd.service || true
+  echo "pbcd is running. Check your laptop with: pbcctl probe"
+  echo "For the GNOME tile, log out and back in, then run: gnome-extensions enable predictive-battery-charging@pbc"
+fi

@@ -1,0 +1,75 @@
+schema: 1
+vendor: LENOVO
+family: ThinkPad X1 Carbon Gen 13
+model: ThinkPad X1 Carbon Gen 13
+profile: lenovo-thinkpad
+reports:
+- date: 2026-10-13
+  pbcctl: 0.1.0
+  product: 21NSS18R00
+  version: ThinkPad X1 Carbon Gen 13
+  bios: N4BET77W (1.47)
+  software:
+    gnome_shell: '50.1'
+    kernel: 7.0.0-38-generic
+    systemd: 259 (259.5-0ubuntu3.4)
+    upower: 1.91.1
+  mem_sleep:
+  - s2idle
+  rtc_wakealarm: true
+  drivers:
+  - thinkpad_acpi
+  batteries:
+    BAT0:
+      start_threshold: true
+      end_threshold: true
+      behaviours:
+      - auto
+      - inhibit-charge
+      - force-discharge
+      design_wh: 57.0
+  other_supplies:
+    AC: Mains
+    ucsi-source-psy-USBC000:001: USB
+    ucsi-source-psy-USBC000:002: USB
+  checks:
+    enforce:
+      verdict: working
+      evidence: confirmed
+      passes: 1
+      failures: 0
+      last: 2026-10-07
+    persist:
+      verdict: working
+      evidence: confirmed
+      passes: 2
+      failures: 0
+      last: 2026-10-07
+    quiet_wake:
+      verdict: working
+      evidence: confirmed
+      passes: 6
+      failures: 0
+      last: 2026-10-07
+    resume:
+      verdict: working
+      evidence: confirmed
+      passes: 1
+      failures: 0
+      last: 2026-10-07
+  charge_curve_min:
+    45-50: 4.2
+    50-55: 4.2
+    55-60: 4.8
+    60-65: 5.0
+    65-70: 5.0
+    70-75: 5.0
+    75-80: 4.9
+    80-85: 5.0
+    85-90: 6.7
+  notes: |-
+    Checks confirmed by hand with spike/01 to 06 on 2026-10-07, before pbcctl selftest existed.
+    Curve measured with spike/04 on USB-C at about 32 W; the taper starts near 83%.
+    Plugging in while asleep does not wake this machine.
+    Opening the lid wakes the kernel through AC and ucsi-source-psy events about 3 s before the lid reads open.
+    UPower re-applies its limit about 10 s after every boot while its limit is on.

@@ -1,0 +1,45 @@
+[Unit]
+Description=Predictive battery charging daemon
+Documentation=https://github.com/hamishfor/predictive-battery-charging
+After=dbus.service systemd-logind.service
+# pbcd takes a logind sleep and shutdown delay inhibitor, so logind must be running.
+Wants=systemd-logind.service
+
+[Service]
+Type=dbus
+BusName=org.pbc.Daemon1
+ExecStart=/usr/bin/pbcd
+Restart=on-failure
+RestartSec=5
+StateDirectory=pbcd
+ConfigurationDirectory=pbcd
+# Shared with the sleep hook in /usr/lib/systemd/system-sleep/pbcd, so it must survive daemon restarts.
+RuntimeDirectory=pbcd
+RuntimeDirectoryPreserve=yes
+
+# pbcd writes only the charge threshold files in /sys. ProtectSystem=strict
+# leaves /sys writable. ProtectKernelTunables is left off because it would make
+# the threshold files read-only.
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+NoNewPrivileges=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RestrictAddressFamilies=AF_UNIX
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+CapabilityBoundingSet=
+IPAddressDeny=any
+
+[Install]
+WantedBy=multi-user.target

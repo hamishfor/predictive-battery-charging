@@ -1,0 +1,15 @@
+[package]
+name = "pbc-model"
+description = "Pure logic: plug sessions from power events, and unplug-time predictors"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+serde.workspace = true
+jiff.workspace = true
+thiserror.workspace = true
+
+
+[dev-dependencies]
+serde_json.workspace = true

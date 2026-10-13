@@ -1,0 +1,98 @@
+# pbcd settings. Every setting is optional. The lines below show the defaults.
+# Remove the leading "# " to change one, then run: sudo systemctl restart pbcd
+
+## Mode
+
+# "control" manages charging. Until it has learned your routine, it charges
+# to 100% as normal. Once it can predict when you unplug, it holds the
+# battery below full while plugged in (see Charge limit), then charges to
+# 100% shortly before you usually unplug.
+# "collect" only records when you plug in and unplug. It never limits charging.
+# mode = "control"
+
+## On/off switch
+
+# Use GNOME Settings → Power → Battery Charging to turn Predictive Battery Charging on or off.
+#   "Preserve Battery Health" turns it on.
+#   "Maximize Charge" turns it off, so the battery always charges to 100%.
+# Set to false to ignore that setting. Predictive Battery Charging then pauses while
+# GNOME's charge limit is on.
+# upower_switch = true
+
+## Charge limit
+
+# While plugged in with a predicted unplug, hold the battery between these
+# levels. A confident prediction of a long session holds at hold_min. A
+# less certain one holds higher, up to hold_max. With no prediction, it
+# charges to 100%. Charging resumes 5 points below the hold.
+# hold_min = 70
+# hold_max = 99
+
+# Once the predicted unplug may be near (within 3 hours), step up to this
+# level, so an early unplug still leaves a good charge. Then charge to 100%
+# in time for the predicted unplug.
+# ready_pct = 90
+
+# Always charge when the battery is below this level, whatever pbcd has
+# learned or scheduled. On two-battery models this uses the combined charge.
+# floor_pct = 25
+
+## Predictions
+
+# Below this confidence (0 to 1), a prediction has no effect and it charges
+# to 100%. Just above it, the hold is near hold_max.
+# min_confidence = 0.3
+
+# Start finishing the charge this many minutes earlier than estimated.
+# margin_min = 15
+
+# Optional fixed schedules: be fully charged by this local time on these days.
+# A schedule adds a deadline to what pbcd learns. pbcd still decides from your
+# routine whether to hold. If it holds past a scheduled time, the battery is
+# full by then. A schedule alone never makes it hold.
+# Add one [[schedule]] block per rule.
+# [[schedule]]
+# days = ["mon", "tue", "wed", "thu", "fri"]
+# full_by = "08:00"
+
+## Sleep and power off
+
+# Briefly wake the laptop from sleep to start the final charge, then sleep again.
+# "auto" turns this on only for laptop models where it is known to work.
+# Other values: "on", "off".
+# quiet_wake = "auto"
+
+# On a laptop model that isn't on the tested list, also try the brief wake,
+# and let the self-checks turn it off if it misbehaves. Running
+# `sudo pbcctl selftest` is the safer way to turn it on.
+# quiet_wake_try_untested = false
+
+# If the final charge is due within this many minutes of going to sleep,
+# start it before sleeping.
+# presleep_window_min = 30
+
+# What to do at sleep when the quiet wake is off or unsupported.
+# "full" starts the final charge before sleeping. "hold" keeps holding.
+# sleep_fallback = "full"
+
+# Charge limit kept while the laptop is powered off: "hold" or "full".
+# shutdown = "hold"
+
+# Show an alert if charging has not resumed this many seconds after
+# switching to full.
+# resume_grace_s = 300
+
+## Data
+
+# Where learned history is stored.
+# db = "/var/lib/pbcd/pbcd.db"
+
+# Seconds between battery readings.
+# sample_interval_s = 60
+
+# Days to keep battery readings. Plug-in history is kept for good. The
+# predictor uses the last 180 days of it.
+# sample_retention_days = 180
+
+# Unplugging and plugging back in within this many seconds counts as one session.
+# merge_gap_s = 300

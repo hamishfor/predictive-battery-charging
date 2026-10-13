@@ -1,0 +1,12 @@
+{
+  "uuid": "predictive-battery-charging@pbc",
+  "name": "Predictive Battery Charging",
+  "description": "Shows and controls Predictive Battery Charging: holds battery charge below full while plugged in, and finishes charging shortly before you usually unplug. Requires the pbcd daemon to be installed.",
+  "shell-version": [
+    "48",
+    "49",
+    "50"
+  ],
+  "url": "https://github.com/hamishfor/predictive-battery-charging",
+  "version": 1
+}

@@ -1,0 +1,7 @@
+#!/bin/sh
+set -e
+if [ "$1" = remove ] || [ "$1" = purge ]; then
+  systemctl disable --now pbcd.service || true
+  # Leave the battery charging normally, with no limit and no pending wake.
+  /usr/bin/pbcd --release || true
+fi
