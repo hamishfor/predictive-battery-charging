@@ -93,27 +93,22 @@ impl Api {
             && present
                 .iter()
                 .all(|b| self.ctl.battery_labels.contains_key(&b.name));
+        let snaps: Vec<_> = present.iter().map(|b| b.snapshot()).collect();
         st.batteries = present
             .iter()
-            .map(|b| {
-                let s = b.snapshot();
-                crate::state::BatteryStatusJson {
-                    name: b.name.clone(),
-                    label: labelled.then(|| self.ctl.battery_labels[&b.name].clone()),
-                    capacity: s.capacity_pct,
-                    status: format!("{:?}", s.status),
-                    thresholds: s.thresholds.map(|t| format!("{}/{}", t.start, t.end)),
-                    energy_full_wh: s.energy_full_uwh.map(|e| (e as f64 / 1e5).round() / 10.0),
-                }
+            .zip(&snaps)
+            .map(|(b, s)| crate::state::BatteryStatusJson {
+                name: b.name.clone(),
+                label: labelled.then(|| self.ctl.battery_labels[&b.name].clone()),
+                capacity: s.capacity_pct,
+                status: format!("{:?}", s.status),
+                thresholds: s.thresholds.map(|t| format!("{}/{}", t.start, t.end)),
+                energy_full_wh: s.energy_full_uwh.map(|e| (e as f64 / 1e5).round() / 10.0),
             })
             .collect();
-        if let Some(c) = pbc_hw::Battery::discover(&self.ctl.root)
-            .ok()
-            .filter(|v| !v.is_empty())
-        {
-            // Report the live combined charge, not the last sample's.
-            st.capacity =
-                pbc_hw::combine(&c.iter().map(|b| b.snapshot()).collect::<Vec<_>>()).capacity_pct;
+        if !snaps.is_empty() {
+            // Live combined charge, not the last sample's.
+            st.capacity = pbc_hw::combine(&snaps).capacity_pct;
         }
         st.gnome_switch = self.ctl.gnome_switch;
         serde_json::to_string(&st).map_err(failed)
