@@ -183,6 +183,141 @@ pub fn classify_wake(decisions: &[(String, String)]) -> WakeOutcome {
     }
 }
 
+/// Why a test wake didn't succeed, and what the user can do about it. Worked
+/// out from the hook's decisions alone, so it applies to any laptop.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WakeDiagnosis {
+    /// What happened, in one sentence.
+    pub what: String,
+    /// What to try next. Empty when there's nothing to change.
+    pub fix: Vec<String>,
+    /// For `quiet_wake_ignore`: the charger sources that fired alongside the clock.
+    pub chargers: Vec<String>,
+}
+
+/// Does this wakeup source name look like a charger: an AC adapter or a USB-C
+/// power source? Used only to decide what to suggest. The hook itself checks
+/// the power supply's type before it ignores anything.
+pub fn looks_like_charger(name: &str) -> bool {
+    let n = name.to_ascii_lowercase();
+    n == "ac"
+        || n.starts_with("ac0")
+        || n.starts_with("adp")
+        || n.starts_with("ucsi-source-psy")
+        || n.starts_with("tcpm-source-psy")
+        || n.contains("-source-psy-")
+}
+
+/// Explain a test wake that wasn't clean. `post` and `normal_resume` details
+/// say which check stopped it. `None` when the hook log has nothing to explain.
+pub fn diagnose_wake(decisions: &[(String, String)]) -> Option<WakeDiagnosis> {
+    let say = |what: &str, fix: &[&str]| WakeDiagnosis {
+        what: what.into(),
+        fix: fix.iter().map(|s| s.to_string()).collect(),
+        chargers: Vec::new(),
+    };
+    if decisions.is_empty() {
+        return Some(say(
+            "The sleep hook didn't run, so the laptop wasn't suspended through systemd, or the hook isn't installed.",
+            &[
+                "Check that /usr/lib/systemd/system-sleep/pbcd exists.",
+                "Close the lid or use the Suspend menu item, not hibernate or hybrid sleep.",
+            ],
+        ));
+    }
+    if let Some((_, e)) = decisions.iter().find(|(d, _)| d == "arm_failed") {
+        return Some(say(
+            &format!("The wake alarm couldn't be set: {e}."),
+            &["Check that /sys/class/rtc/rtc0/wakealarm exists and is writable by root."],
+        ));
+    }
+    if !decisions.iter().any(|(d, _)| d == "post") {
+        return Some(say(
+            "The alarm was set, but the hook never saw the laptop wake.",
+            &["Was the laptop woken some other way, or turned off? Try again and leave it for the full 5 minutes."],
+        ));
+    }
+    let (_, why) = decisions.iter().find(|(d, _)| d == "normal_resume")?;
+
+    if why.contains("not at scheduled time") {
+        return Some(say(
+            "The laptop woke, but not at the planned time, so something else woke it.",
+            &["Keep the lid closed and the laptop still for the whole 5 minutes, then try again."],
+        ));
+    }
+    if why.contains("rtc did not fire") {
+        return Some(say(
+            "The laptop woke at the planned time, but no wakeup source recognisable as the clock alarm counted the wake.",
+            &[
+                "This firmware may not report clock wakes. Paste the hook's `post` line from `journalctl -k -b | grep pbcd-sleep-hook` into a device-support issue.",
+            ],
+        ));
+    }
+    if let Some(list) = why.strip_prefix("other wake sources: ") {
+        let others: Vec<String> = list
+            .split_whitespace()
+            .map(|s| s.split_once("(+").map_or(s, |(n, _)| n).to_string())
+            .collect();
+        let chargers: Vec<String> = others
+            .iter()
+            .filter(|s| looks_like_charger(s))
+            .cloned()
+            .collect();
+        if !chargers.is_empty() && chargers.len() == others.len() {
+            return Some(WakeDiagnosis {
+                what: format!(
+                    "The clock woke the laptop on time, but {} also reported a wake. Some laptops do this on every wake while plugged in, and pbcd treats it as a possible lid opening.",
+                    chargers.join(" and ")
+                ),
+                fix: vec![
+                    "If this happens on every try, add this line to /etc/pbcd/config.toml, then run: sudo systemctl restart pbcd".into(),
+                    format!("  quiet_wake_ignore = [{}]", chargers.iter().map(|c| format!("\"{c}\"")).collect::<Vec<_>>().join(", ")),
+                    "pbcd then allows it only while on AC with the lid closed, and waits longer before sleeping again.".into(),
+                ],
+                chargers,
+            });
+        }
+        return Some(say(
+            &format!("Something other than the clock woke the laptop: {}.", others.join(", ")),
+            &[
+                "Unplug USB devices such as mice and keyboards, keep the lid closed, and try again.",
+                "If the same source shows every time, include this output in a device-support issue.",
+            ],
+        ));
+    }
+    if why.contains("lid not closed") || why.contains("lid opened") {
+        return Some(say(
+            "The lid was open when the hook checked it.",
+            &["Keep the lid closed until the 5 minutes are up."],
+        ));
+    }
+    if why.contains("user.slice not frozen") {
+        return Some(say(
+            "The desktop wasn't frozen during sleep, so pbcd can't wake quietly here.",
+            &["This needs systemd 256 or newer, with user-session freezing on (the default). Check: systemctl --version"],
+        ));
+    }
+    if why.contains("threshold write failed") {
+        return Some(say(
+            &format!("The firmware rejected the charge-limit write during the wake: {why}."),
+            &[],
+        ));
+    }
+    if why.contains("ignored source fired while off AC") {
+        return Some(say(
+            "A charger source fired after the charger was unplugged.",
+            &["Keep the charger plugged in during the test."],
+        ));
+    }
+    if why.contains("handshake refused") || why.contains("kernel refused suspend") {
+        return Some(say(
+            "A device kept signalling while the laptop tried to sleep again.",
+            &["Unplug USB devices and try again. If it repeats, include this output in a device-support issue."],
+        ));
+    }
+    Some(say(&format!("The hook resumed normally: {why}."), &[]))
+}
+
 /// Charging behaviour over one hold or release, from consecutive samples.
 #[derive(Debug, Clone, Copy)]
 pub struct ChargeObs {
@@ -242,6 +377,58 @@ mod tests {
 
     fn d(a: &str, b: &str) -> (String, String) {
         (a.into(), b.into())
+    }
+
+    #[test]
+    fn charger_on_every_wake_suggests_ignore() {
+        let n = [
+            d("armed", "rtc wake at 1"),
+            d("post", "lid_closed=true frozen=Some(true) ac=true wake=[00:04(+1) ucsi-source-psy-USBC000:001(+1)] ignored=[] t-wake=3s nested=0"),
+            d("normal_resume", "other wake sources: ucsi-source-psy-USBC000:001(+1)"),
+        ];
+        let g = diagnose_wake(&n).unwrap();
+        assert_eq!(g.chargers, ["ucsi-source-psy-USBC000:001"]);
+        assert!(
+            g.fix
+                .iter()
+                .any(|l| l.contains(r#"quiet_wake_ignore = ["ucsi-source-psy-USBC000:001"]"#)),
+            "{g:?}"
+        );
+    }
+
+    #[test]
+    fn keyboard_wake_is_not_offered_as_ignorable() {
+        let n = [
+            d("post", "wake=[rtc_cmos(+1) serio0(+1) AC(+1)]"),
+            d("normal_resume", "other wake sources: AC(+1) serio0(+1)"),
+        ];
+        let g = diagnose_wake(&n).unwrap();
+        assert!(g.chargers.is_empty());
+        assert!(!g.fix.iter().any(|l| l.contains("quiet_wake_ignore")));
+    }
+
+    #[test]
+    fn diagnoses_cover_the_hook_failures() {
+        assert!(diagnose_wake(&[]).unwrap().what.contains("didn't run"));
+        let rtc = [
+            d("post", "wake=[ucsi(+1)]"),
+            d("normal_resume", "rtc did not fire"),
+        ];
+        assert!(diagnose_wake(&rtc).unwrap().what.contains("clock alarm"));
+        let thaw = [
+            d("post", ""),
+            d(
+                "normal_resume",
+                "user.slice not frozen (unexpected); not interfering",
+            ),
+        ];
+        assert!(diagnose_wake(&thaw).unwrap().fix[0].contains("systemd 256"));
+        let ok = [
+            d("post", ""),
+            d("wrote", "0/100"),
+            d("resuspend", "nested=1"),
+        ];
+        assert_eq!(diagnose_wake(&ok), None);
     }
 
     #[test]

@@ -17,6 +17,11 @@
 //! supplies, which some laptops fire before the lid on opening); the lid
 //! reads closed; and user.slice is not thawed. Re-suspend goes through the
 //! wakeup_count handshake, so a lid opening at any moment aborts it.
+//!
+//! Some laptops fire a power supply on every wake while plugged in. The plan's
+//! `ignore_wake` list names those. A listed source is tolerated only if it is a
+//! Mains or USB power supply and AC is online, and the settle window is then
+//! longer, so a lid opening that fired it first still shows before re-suspend.
 
 #[path = "../wakeplan.rs"]
 mod wakeplan;
@@ -42,6 +47,9 @@ const WRITE_DEADLINE: Duration = Duration::from_secs(5);
 /// Minimum time from kernel resume to re-suspend. The lid can read closed for
 /// about 3 s after resume, and our own write causes power_supply events that need to settle.
 const SETTLE: Duration = Duration::from_millis(3000);
+/// The settle window when an ignored power-supply source fired. Twice the
+/// usual, because that source may be the first sign of a lid opening.
+const SETTLE_IGNORED: Duration = Duration::from_millis(6000);
 /// Typical delay from kernel resume to post-hook start.
 const POST_START: Duration = Duration::from_millis(600);
 const EARLY_S: i64 = 5;
@@ -76,22 +84,59 @@ fn snapshot() -> HashMap<String, u64> {
     m
 }
 
-/// Wakeup sources whose event count went up, as (is_rtc, "name(+n)").
-fn changed(before: &HashMap<String, u64>, after: &HashMap<String, u64>) -> Vec<(bool, String)> {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Source {
+    Rtc,
+    /// Listed in the plan's `ignore_wake`, and a Mains or USB power supply.
+    Ignored,
+    Other,
+}
+
+/// Wakeup sources whose event count went up, as (kind, "name(+n)").
+fn changed(
+    before: &HashMap<String, u64>,
+    after: &HashMap<String, u64>,
+    ignore: &[String],
+) -> Vec<(Source, String)> {
     let rtc_dirs = rtc_wakeup_dirs();
-    let mut v: Vec<(bool, String)> = after
+    let mut v: Vec<(Source, String)> = after
         .iter()
         .filter(|(k, c)| before.get(*k).is_some_and(|b| b != *c))
         .map(|(k, c)| {
             let (dir, name) = k.split_once('|').unwrap_or(("", k));
-            let rtc = rtc_dirs.iter().any(|d| d == dir)
+            let kind = if rtc_dirs.iter().any(|d| d == dir)
                 || name == "rtc_cmos"
-                || name.starts_with("alarmtimer");
-            (rtc, format!("{name}(+{})", c - before[k]))
+                || name.starts_with("alarmtimer")
+            {
+                Source::Rtc
+            } else if wakeplan::ignore_matches(ignore, name) && is_charger(name) {
+                Source::Ignored
+            } else {
+                Source::Other
+            };
+            (kind, format!("{name}(+{})", c - before[k]))
         })
         .collect();
     v.sort_by(|a, b| a.1.cmp(&b.1));
     v
+}
+
+/// Is `name` a Mains or USB power supply? Only these can be ignored, so a
+/// config entry can never hide a keyboard, lid or power button.
+fn is_charger(name: &str) -> bool {
+    !name.contains('/')
+        && matches!(
+            read(sys("/sys/class/power_supply").join(name).join("type")).as_deref(),
+            Some("Mains") | Some("USB")
+        )
+}
+
+fn labels(ch: &[(Source, String)], kind: Source) -> String {
+    ch.iter()
+        .filter(|(k, _)| *k == kind)
+        .map(|(_, s)| s.as_str())
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// The wakeup sources that belong to rtc0's device. Their name is the device's,
@@ -252,20 +297,22 @@ fn main() {
     loop {
         let t_resume = Instant::now();
         let after = snapshot();
-        let ch = changed(&base, &after);
-        let others: Vec<&String> = ch.iter().filter(|(rtc, _)| !rtc).map(|(_, s)| s).collect();
+        let ch = changed(&base, &after, &plan.ignore_wake);
+        let ignored = ch.iter().any(|(k, _)| *k == Source::Ignored);
         let t = now();
         h.log(
             "post",
             format!(
-                "lid_closed={} frozen={:?} ac={} wake=[{}] t-wake={}s nested={nested}",
+                "lid_closed={} frozen={:?} ac={} wake=[{}] ignored=[{}] t-wake={}s nested={nested}",
                 lid_closed(),
                 user_slice_frozen(),
                 ac_online(),
                 ch.iter()
+                    .filter(|(k, _)| *k != Source::Ignored)
                     .map(|(_, s)| s.as_str())
                     .collect::<Vec<_>>()
                     .join(" "),
+                labels(&ch, Source::Ignored),
                 t - plan.wake_at
             ),
         );
@@ -277,17 +324,19 @@ fn main() {
         if t < plan.wake_at - EARLY_S || t > plan.wake_at + LATE_S {
             h.normal("not at scheduled time");
         }
-        if !ch.iter().any(|(rtc, _)| *rtc) {
+        if !ch.iter().any(|(k, _)| *k == Source::Rtc) {
             h.normal("rtc did not fire");
         }
-        if !others.is_empty() {
+        if ch.iter().any(|(k, _)| *k == Source::Other) {
             h.normal(format!(
                 "other wake sources: {}",
-                others
-                    .iter()
-                    .map(|s| s.as_str())
-                    .collect::<Vec<_>>()
-                    .join(" ")
+                labels(&ch, Source::Other)
+            ));
+        }
+        if ignored && !ac_online() {
+            h.normal(format!(
+                "ignored source fired while off AC: {}",
+                labels(&ch, Source::Ignored)
             ));
         }
         if !lid_closed() {
@@ -346,7 +395,7 @@ fn main() {
         }
 
         // Settle window, polling the lid.
-        let settle = SETTLE.saturating_sub(POST_START);
+        let settle = if ignored { SETTLE_IGNORED } else { SETTLE }.saturating_sub(POST_START);
         while t_resume.elapsed() < settle {
             if !lid_closed() {
                 h.normal("lid opened during settle window");

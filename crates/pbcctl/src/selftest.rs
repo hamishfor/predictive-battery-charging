@@ -56,6 +56,8 @@ struct Ctx {
     bats: Vec<Battery>,
     rules: pbc_hw::profile::ThresholdRules,
     opts: Opts,
+    /// pbcd's `quiet_wake_ignore`, so the test wake behaves like a real one.
+    ignore_wake: Vec<String>,
 }
 
 impl Ctx {
@@ -103,12 +105,19 @@ pub fn run(sysfs: &std::path::Path, opts: Opts) -> Result<()> {
         bail!("no battery exposes charge limits");
     }
     // Fail early if pbcd can't take results.
-    bus::call(opts.user_bus, "StatusJson", &[]).context("pbcd must be running to save results")?;
+    let status = bus::status(opts.user_bus).context("pbcd must be running to save results")?;
+    let ignore_wake: Vec<String> = status["quiet_wake_ignore"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|v| v.as_str().map(String::from))
+        .collect();
     let cx = Ctx {
         root,
         bats,
         rules: p.thresholds.clone(),
         opts,
+        ignore_wake,
     };
 
     println!(
@@ -203,6 +212,7 @@ fn quiet_wake(cx: &Ctx) -> Result<()> {
         "batteries": cx.bats.iter().map(|b| cx.root.path(format!("class/power_supply/{}", b.name))).collect::<Vec<_>>(),
         "min_gap": cx.rules.min_gap,
         "selftest": true,
+        "ignore_wake": cx.ignore_wake,
     });
     std::fs::create_dir_all(dir)?;
     std::fs::write(dir.join("wake-plan.json"), plan.to_string())?;
@@ -230,17 +240,30 @@ fn quiet_wake(cx: &Ctx) -> Result<()> {
             )
         })
         .collect();
-    let _ = std::fs::remove_file(dir.join("wake-plan.json"));
-    use pbc_model::selfcheck::{classify_wake, WakeOutcome};
+    // pbcd left the plan and log for us. Clear them now we've read them.
+    for f in ["wake-plan.json", "wake-done", "wake-log.jsonl"] {
+        let _ = std::fs::remove_file(dir.join(f));
+    }
+    use pbc_model::selfcheck::{classify_wake, diagnose_wake, WakeOutcome};
+    let explain = || {
+        if let Some(g) = diagnose_wake(&decisions) {
+            println!("  {}", g.what);
+            for l in &g.fix {
+                println!("  {l}");
+            }
+        }
+    };
     match classify_wake(&decisions) {
         WakeOutcome::Clean => println!("  The wake ran and the laptop went back to sleep."),
         WakeOutcome::Bad(why) => {
             println!("  The wake went wrong: {why}");
+            explain();
             cx.save("quiet_wake", false)?;
             return Ok(());
         }
         WakeOutcome::NotTested => {
-            println!("  The test wake didn't run. Was the lid opened before {at}, or the charger unplugged?");
+            println!("  The test wake didn't finish.");
+            explain();
             println!(
                 "  Nothing was saved. Run `sudo pbcctl selftest --only quiet_wake` to try again."
             );

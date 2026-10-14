@@ -43,6 +43,10 @@ pub struct Config {
     /// With `quiet_wake = "auto"` on an untested model, try it and let the
     /// self-checks decide. Off by default: an untested wake could be visible.
     pub quiet_wake_try_untested: bool,
+    /// Charger wakeup sources (Mains or USB power supplies) that fire on every
+    /// wake on this machine. The quiet wake tolerates them while on AC with the
+    /// lid closed. Added to the profile's list. A trailing `*` matches any suffix.
+    pub quiet_wake_ignore: Vec<String>,
     /// If the top-off is due within this many minutes of sleeping, start it before sleep.
     pub presleep_window_min: i64,
     /// With no quiet wake: `full` (start the top-off before sleeping) or `hold`.
@@ -101,6 +105,7 @@ impl Default for Config {
             margin_min: 15,
             quiet_wake: QuietWake::Auto,
             quiet_wake_try_untested: false,
+            quiet_wake_ignore: Vec::new(),
             presleep_window_min: 30,
             sleep_fallback: SleepFallback::Full,
             shutdown: ShutdownValue::Hold,

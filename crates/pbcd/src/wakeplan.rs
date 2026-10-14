@@ -27,11 +27,29 @@ pub struct Plan {
     /// Written by `pbcctl selftest`. pbcd leaves a pending selftest plan in place.
     #[serde(default)]
     pub selftest: bool,
+    /// Power-supply wakeup sources that fire on every wake on this machine
+    /// (`quiet_wake_ignore`). The hook tolerates them only while on AC with the lid closed.
+    #[serde(default)]
+    pub ignore_wake: Vec<String>,
+}
+
+/// Does wakeup source `name` match one of `patterns`? A trailing `*` matches any suffix.
+pub fn ignore_matches(patterns: &[String], name: &str) -> bool {
+    patterns.iter().any(|p| match p.strip_suffix('*') {
+        Some(prefix) => name.starts_with(prefix),
+        None => name == p,
+    })
 }
 
 /// A selftest plan that hasn't fired yet. pbcd must not overwrite it before sleep.
 pub fn pending_selftest(dir: &Path, now: i64) -> bool {
     read(dir).is_some_and(|p| p.selftest && p.wake_at > now)
+}
+
+/// A selftest plan due within the last 15 minutes, or still to come. pbcd
+/// leaves its log for `pbcctl selftest` to read. An older one was abandoned.
+pub fn recent_selftest(dir: &Path, now: i64) -> bool {
+    read(dir).is_some_and(|p| p.selftest && p.wake_at > now - 15 * 60)
 }
 
 pub fn plan_path(dir: &Path) -> PathBuf {

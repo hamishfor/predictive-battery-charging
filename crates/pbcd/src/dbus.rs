@@ -91,6 +91,7 @@ impl Api {
             .and_then(|a| a.current())
             .map(|t| format!("{}/{}", t.start, t.end));
         st.paused = self.ctl.paused.lock().await.clone();
+        st.quiet_wake_ignore = self.ctl.ignore_wake.clone();
         let present = pbc_hw::Battery::discover(&self.ctl.root).unwrap_or_default();
         // Use the profile's labels only if they cover every battery present.
         let labelled = present.len() > 1

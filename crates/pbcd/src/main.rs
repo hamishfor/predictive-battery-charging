@@ -99,6 +99,8 @@ pub struct Ctl {
     /// when the limit was last raised while plugged in.
     pub watch: Mutex<Watch>,
     pub resume_grace_s: i64,
+    /// `quiet_wake_ignore` from the profile and config, passed to the hook in each plan.
+    pub ignore_wake: Vec<String>,
 }
 
 #[derive(Default)]
@@ -284,13 +286,21 @@ async fn main() -> Result<()> {
     } else {
         cfg.mode
     };
-    let model_validated = match &hw.profile {
-        Some(p) => {
-            let dmi = pbc_hw::DmiInfo::read(&hw.root);
-            p.quiet_wake.validated.iter().any(|m| m == dmi.model())
-        }
-        None => false,
-    };
+    let dmi = pbc_hw::DmiInfo::read(&hw.root);
+    let model_validated = hw
+        .profile
+        .as_ref()
+        .is_some_and(|p| p.quiet_wake.validated.iter().any(|m| m == dmi.model()));
+    // Charger wakeup sources the hook may tolerate: the profile's for this model, then the config's.
+    let ignore_wake: Vec<String> = hw
+        .profile
+        .as_ref()
+        .and_then(|p| p.quiet_wake.ignore.get(dmi.model()))
+        .into_iter()
+        .flatten()
+        .chain(&cfg.quiet_wake_ignore)
+        .cloned()
+        .collect();
     // Re-evaluated before every sleep, so a self-check failure takes effect the same night.
     let quiet_wake_now = |store: &Store| match cfg.quiet_wake {
         QuietWake::On => true,
@@ -352,8 +362,10 @@ async fn main() -> Result<()> {
         last_seen,
     })?;
     // Pick up the result of the last maintenance wake, if any.
-    judge_wake_log(&core.store, &cfg.runtime_dir);
-    wakeplan::clear(&cfg.runtime_dir);
+    if !wakeplan::recent_selftest(&cfg.runtime_dir, now()) {
+        judge_wake_log(&core.store, &cfg.runtime_dir);
+        wakeplan::clear(&cfg.runtime_dir);
+    }
     tracing::info!(
         db = %cfg.db.display(),
         sessions = core.store.session_count()?,
@@ -384,6 +396,7 @@ async fn main() -> Result<()> {
         last_signalled: Mutex::new(None),
         watch: Mutex::new(Watch::default()),
         resume_grace_s: cfg.resume_grace_s,
+        ignore_wake: ignore_wake.clone(),
     });
 
     // D-Bus: our API, plus logind sleep/shutdown signals and UPower.
@@ -511,8 +524,11 @@ async fn main() -> Result<()> {
                     inhibitor = None; // release so the system can sleep
                 } else {
                     ctl.core.lock().await.event(PowerEvent::Resume { ts: now(), online: hw.online(), capacity: hw.capacity() })?;
-                    judge_wake_log(&ctl.core.lock().await.store, &cfg.runtime_dir);
-                    wakeplan::clear(&cfg.runtime_dir);
+                    // pbcctl selftest reads its own wake's log, then clears up.
+                    if !wakeplan::recent_selftest(&cfg.runtime_dir, now()) {
+                        judge_wake_log(&ctl.core.lock().await.store, &cfg.runtime_dir);
+                        wakeplan::clear(&cfg.runtime_dir);
+                    }
                     tracing::info!(online = hw.online(), "resumed");
                     if let Some(l) = &login { inhibitor = inhibit(l).await; }
                     ctl.step().await?;
@@ -597,6 +613,7 @@ async fn before_sleep(ctl: &Ctl, cfg: &config::Config, quiet_wake: bool, hw: &hw
                 batteries,
                 min_gap: gap,
                 selftest: false,
+                ignore_wake: ctl.ignore_wake.clone(),
             };
             if let Err(e) = wakeplan::write(&cfg.runtime_dir, &plan) {
                 // Without a plan, the hook does nothing. Fall back to topping off now.

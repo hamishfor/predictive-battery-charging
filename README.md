@@ -183,6 +183,7 @@ All settings live in `/etc/pbcd/config.toml`, with comments. Restart the daemon 
 | `ready_pct` | `90` | The level it steps up to when an unplug may be near |
 | `floor_pct` | `25` | Always charge below this level, whatever is learned or scheduled. On two-battery models it uses the combined charge. |
 | `quiet_wake` | `auto` | Brief wake during sleep to finish charging |
+| `quiet_wake_ignore` | `[]` | Charger wakeup sources that fire on every wake on this laptop. `pbcctl selftest` suggests the value if needed. |
 | `upower_switch` | `true` | Use GNOME's Battery Charging setting as the on/off switch |
 
 ## Uninstall

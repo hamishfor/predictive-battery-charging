@@ -67,6 +67,14 @@
 # `sudo pbcctl selftest` is the safer way to turn it on.
 # quiet_wake_try_untested = false
 
+# Charger wakeup sources that report a wake every time the laptop wakes while
+# plugged in, on this machine. The brief wake normally treats these as a
+# possible lid opening and lets the laptop wake fully. Listed ones are allowed
+# while on AC with the lid closed. `sudo pbcctl selftest --only quiet_wake`
+# tells you the name to add if your laptop needs it. A trailing * matches
+# any suffix. Only AC adapters and USB power sources can be listed.
+# quiet_wake_ignore = []
+
 # If the final charge is due within this many minutes of going to sleep,
 # start it before sleeping.
 # presleep_window_min = 30
