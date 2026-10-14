@@ -138,4 +138,4 @@ The release is the last job of `.github/workflows/ci.yml`. On a push to `main`, 
 
 Don't create tags or releases by hand. A tag for the version stops the workflow from releasing it. To retry a failed release, fix it and push again, or run CI from the Actions tab.
 
-The extension's `version` in `extension/metadata.json` is separate. extensions.gnome.org sets it on upload.
+`packaging/build-deb.sh` sets the extension's `version-name` to the package version, which `gnome-extensions info` shows. The integer `version` in `extension/metadata.json` is separate. extensions.gnome.org sets it on upload.

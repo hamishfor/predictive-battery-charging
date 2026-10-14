@@ -22,13 +22,22 @@ trap 'rm -rf "$STAGE"' EXIT
 PBC_RELEASE=1 cargo build --release --locked
 mkdir -p "$OUT"
 
+# Stage the extension with version-name set to the package version, which
+# gnome-extensions info shows. version stays an integer for extensions.gnome.org.
+EXTSRC="$STAGE/extension"
+install -d "$EXTSRC"
+install -m 644 extension/extension.js extension/prefs.js extension/status.js "$EXTSRC/"
+sed "s/^\(  \"version\": [0-9]*\)$/\1,\n  \"version-name\": \"$VERSION\"/" \
+  extension/metadata.json > "$EXTSRC/metadata.json"
+grep -q '"version-name"' "$EXTSRC/metadata.json" || { echo "Could not set version-name in metadata.json" >&2; exit 1; }
+
 # The extension zip, for gnome-extensions install and extensions.gnome.org.
 # gnome-extensions pack checks metadata.json, so prefer it when it's installed.
 rm -f "$OUT/$UUID.shell-extension.zip"
 if command -v gnome-extensions >/dev/null; then
-  gnome-extensions pack --force --extra-source=status.js -o "$OUT" extension
+  gnome-extensions pack --force --extra-source=status.js -o "$OUT" "$EXTSRC"
 else
-  (cd extension && zip -q -r "../$OUT/$UUID.shell-extension.zip" metadata.json extension.js prefs.js status.js)
+  (cd "$EXTSRC" && zip -q -r "$OLDPWD/$OUT/$UUID.shell-extension.zip" metadata.json extension.js prefs.js status.js)
 fi
 
 # Package tree.
@@ -46,7 +55,7 @@ install -D -m 644 dist/config.toml "$R/etc/pbcd/config.toml"
 # System-wide extension: each user enables it once.
 EXT="$R/usr/share/gnome-shell/extensions/$UUID"
 install -d "$EXT"
-install -m 644 extension/metadata.json extension/extension.js extension/prefs.js extension/status.js "$EXT/"
+install -m 644 "$EXTSRC"/metadata.json "$EXTSRC"/extension.js "$EXTSRC"/prefs.js "$EXTSRC"/status.js "$EXT/"
 DOC="$R/usr/share/doc/$NAME"
 install -D -m 644 README.md "$DOC/README.md"
 install -m 644 docs/DEVICE_SUPPORT.md "$DOC/"
