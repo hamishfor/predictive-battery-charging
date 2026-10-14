@@ -618,7 +618,7 @@ checksum = "f38d5652c16fde515bb1ecef450ab0f6a219d619a7274976324d5e377f7dceba"
 
 [[package]]
 name = "pbc-hw"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "serde",
@@ -631,7 +631,7 @@ dependencies = [
 
 [[package]]
 name = "pbc-model"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "jiff",
  "serde",
@@ -641,7 +641,7 @@ dependencies = [
 
 [[package]]
 name = "pbc-store"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "pbc-model",
@@ -652,7 +652,7 @@ dependencies = [
 
 [[package]]
 name = "pbcctl"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -664,7 +664,7 @@ dependencies = [
 
 [[package]]
 name = "pbcd"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "clap",
