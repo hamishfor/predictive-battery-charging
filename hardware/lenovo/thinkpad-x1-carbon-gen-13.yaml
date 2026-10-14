@@ -1,4 +1,4 @@
-schema: 1
+schema: 2
 vendor: LENOVO
 family: ThinkPad X1 Carbon Gen 13
 model: ThinkPad X1 Carbon Gen 13
@@ -33,30 +33,10 @@ reports:
     ucsi-source-psy-USBC000:001: USB
     ucsi-source-psy-USBC000:002: USB
   checks:
-    enforce:
-      verdict: working
-      evidence: confirmed
-      passes: 1
-      failures: 0
-      last: 2026-10-07
-    persist:
-      verdict: working
-      evidence: confirmed
-      passes: 2
-      failures: 0
-      last: 2026-10-07
-    quiet_wake:
-      verdict: working
-      evidence: confirmed
-      passes: 6
-      failures: 0
-      last: 2026-10-07
-    resume:
-      verdict: working
-      evidence: confirmed
-      passes: 1
-      failures: 0
-      last: 2026-10-07
+    enforce: working
+    persist: working
+    quiet_wake: working
+    resume: working
   charge_curve_min:
     45-50: 4.2
     50-55: 4.2

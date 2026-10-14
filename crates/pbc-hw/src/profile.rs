@@ -62,9 +62,6 @@ pub struct QuietWakeRules {
     /// Models where the quiet wake was validated, as [`DmiInfo::model`] gives them.
     #[serde(default)]
     pub validated: Vec<String>,
-    /// Charger wakeup sources that fire on every wake, by model. Applied only on that model.
-    #[serde(default)]
-    pub ignore: std::collections::BTreeMap<String, Vec<String>>,
 }
 
 #[derive(Debug, Clone, Deserialize)]

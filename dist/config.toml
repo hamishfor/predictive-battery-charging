@@ -45,10 +45,6 @@
 # Also try it on untested models, until a self-check fails.
 # quiet_wake_try_untested = false
 
-# Chargers that report a wake every time on this laptop. The selftest finds
-# and saves these itself. Only AC and USB power supplies; * matches a suffix.
-# quiet_wake_ignore = []
-
 # Start the final charge before sleeping if it's due within this many minutes.
 # presleep_window_min = 30
 

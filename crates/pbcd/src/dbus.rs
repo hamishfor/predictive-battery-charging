@@ -91,8 +91,6 @@ impl Api {
             .and_then(|a| a.current())
             .map(|t| format!("{}/{}", t.start, t.end));
         st.paused = self.ctl.paused.lock().await.clone();
-        st.quiet_wake_ignore = self.ctl.ignore_wake().await;
-        st.selftest_wake_ignore = self.ctl.selftest_ignore().await;
         let present = pbc_hw::Battery::discover(&self.ctl.root).unwrap_or_default();
         // Use the profile's labels only if they cover every battery present.
         let labelled = present.len() > 1
@@ -180,11 +178,6 @@ impl Api {
                     zbus::fdo::Error::InvalidArgs(format!("unknown capability {capability}"))
                 })?]
         };
-        if capability.is_empty() {
-            core.store
-                .set(crate::KV_SELFTEST_IGNORE, "")
-                .map_err(failed)?;
-        }
         for c in targets {
             let mut r = core.store.capability(c).map_err(failed)?;
             r.confirmed = if capability.is_empty() {
@@ -197,47 +190,6 @@ impl Api {
         }
         drop(core);
         self.ctl.kick.notify_one();
-        Ok(())
-    }
-
-    /// Save the charger wakeup sources that `pbcctl selftest` confirmed fire on
-    /// every quiet wake. Replaces the previous list. Only AC adapters and USB
-    /// power supplies are accepted, so a keyboard, lid or button can't be listed.
-    async fn set_wake_ignore(
-        &self,
-        sources: Vec<String>,
-        #[zbus(header)] hdr: Header<'_>,
-        #[zbus(connection)] conn: &Connection,
-    ) -> zbus::fdo::Result<()> {
-        if self.polkit {
-            authorize(conn, &hdr, ACTION_SELFTEST).await?;
-        }
-        for s in &sources {
-            let ty = self
-                .ctl
-                .root
-                .read_opt(format!("class/power_supply/{s}/type"));
-            if s.contains('/')
-                || s.contains('*')
-                || !matches!(ty.as_deref(), Some("Mains") | Some("USB"))
-            {
-                return Err(zbus::fdo::Error::InvalidArgs(format!(
-                    "{s} is not an AC or USB power supply"
-                )));
-            }
-        }
-        let json = serde_json::to_string(&sources).map_err(failed)?;
-        self.ctl
-            .core
-            .lock()
-            .await
-            .store
-            .set(crate::KV_SELFTEST_IGNORE, &json)
-            .map_err(failed)?;
-        tracing::info!(
-            ?sources,
-            "selftest: quiet wake ignores these charger sources"
-        );
         Ok(())
     }
 

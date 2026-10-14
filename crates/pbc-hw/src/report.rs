@@ -15,7 +15,8 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-pub const SCHEMA: u32 = 1;
+/// 2: each check is just `working`, `failed` or `untested`.
+pub const SCHEMA: u32 = 2;
 
 /// Everything known about one model: `hardware/<vendor>/<model>.yaml`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -85,46 +86,14 @@ pub struct BatteryReport {
     pub design_wh: Option<f64>,
 }
 
+/// Whether this machine can do something. A quiet wake is `working` only once
+/// a person confirmed it stayed dark and silent, because nothing on the machine can tell.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum CheckVerdict {
+pub enum Check {
     Working,
     Failed,
-    Unknown,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Evidence {
-    /// Never judged.
-    None,
-    /// Judged by pbcd during normal use.
-    Observed,
-    /// Confirmed by a person in a guided test.
-    Confirmed,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct Check {
-    pub verdict: CheckVerdict,
-    pub evidence: Evidence,
-    #[serde(default)]
-    pub passes: u32,
-    #[serde(default)]
-    pub failures: u32,
-    /// Date of the last observation, as YYYY-MM-DD.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub last: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub last_failure: Option<String>,
-}
-
-impl Check {
-    /// Is this a stronger result than `other`? Confirmed beats observed, then more observations win.
-    fn stronger_than(&self, other: &Check) -> bool {
-        (self.evidence, self.passes + self.failures)
-            > (other.evidence, other.passes + other.failures)
-    }
+    Untested,
 }
 
 /// Lower-case, with runs of anything but letters and digits turned into one `-`.
@@ -161,8 +130,8 @@ impl ModelFile {
     }
 
     /// Add a report. A report from the same machine type and BIOS replaces the
-    /// old one, but each check, the curve and the notes keep the stronger or
-    /// non-empty value, so a quick re-run never discards a confirmed result.
+    /// old one, but a check the new run left untested, the curve and the notes
+    /// keep the old value, so a quick re-run never discards a result.
     pub fn merge(&mut self, mut new: Report, profile: Option<String>) {
         self.profile = profile;
         match self
@@ -172,8 +141,8 @@ impl ModelFile {
         {
             Some(old) => {
                 for (k, c) in &old.checks {
-                    if new.checks.get(k).is_none_or(|n| c.stronger_than(n)) {
-                        new.checks.insert(k.clone(), c.clone());
+                    if new.checks.get(k).is_none_or(|n| *n == Check::Untested) {
+                        new.checks.insert(k.clone(), *c);
                     }
                 }
                 if new.charge_curve_min.is_empty() {
@@ -355,17 +324,6 @@ mod tests {
         assert_eq!(slug("XPS 13 9340 (2024)"), "xps-13-9340-2024");
     }
 
-    fn check(evidence: Evidence, passes: u32) -> Check {
-        Check {
-            verdict: CheckVerdict::Working,
-            evidence,
-            passes,
-            failures: 0,
-            last: None,
-            last_failure: None,
-        }
-    }
-
     fn report(product: &str, checks: &[(&str, Check)]) -> Report {
         Report {
             date: "2026-10-13".into(),
@@ -379,10 +337,7 @@ mod tests {
             drivers: vec![],
             batteries: BTreeMap::new(),
             other_supplies: BTreeMap::new(),
-            checks: checks
-                .iter()
-                .map(|(k, c)| (k.to_string(), c.clone()))
-                .collect(),
+            checks: checks.iter().map(|(k, c)| (k.to_string(), *c)).collect(),
             charge_curve_min: BTreeMap::new(),
             notes: String::new(),
         }
@@ -396,29 +351,20 @@ mod tests {
             family: "F".into(),
             model: "M".into(),
             profile: None,
-            reports: vec![report(
-                "A",
-                &[("quiet_wake", check(Evidence::Confirmed, 1))],
-            )],
+            reports: vec![report("A", &[("quiet_wake", Check::Working)])],
         };
         f.reports[0].notes = "fan stayed off".into();
-        // Same machine type, re-run with nothing confirmed: keeps the confirmed check and notes.
+        // Same machine type, re-run without the wake test: keeps the result and the notes.
         f.merge(
             report(
                 "A",
-                &[
-                    ("quiet_wake", check(Evidence::None, 0)),
-                    ("enforce", check(Evidence::Observed, 3)),
-                ],
+                &[("quiet_wake", Check::Untested), ("enforce", Check::Working)],
             ),
             Some("p".into()),
         );
         assert_eq!(f.reports.len(), 1);
-        assert_eq!(
-            f.reports[0].checks["quiet_wake"].evidence,
-            Evidence::Confirmed
-        );
-        assert_eq!(f.reports[0].checks["enforce"].passes, 3);
+        assert_eq!(f.reports[0].checks["quiet_wake"], Check::Working);
+        assert_eq!(f.reports[0].checks["enforce"], Check::Working);
         assert_eq!(f.reports[0].notes, "fan stayed off");
         assert_eq!(f.profile.as_deref(), Some("p"));
         // Another machine type: appended.

@@ -122,8 +122,7 @@ Service `org.pbc.Daemon1`, object `/org/pbc/Daemon1`, on the system bus.
 | `StatusJson() → s` | Current state as JSON |
 | `SessionsJson(x since) → s` | Recorded plug-in sessions as JSON |
 | `ChargeNow(b on)` | Charge to full (checked by polkit action `org.pbc.daemon1.charge-now`) |
-| `ConfirmCapability(s key, b working)` | Save a guided-test result. An empty key clears all, including the saved wake sources below (polkit action `org.pbc.daemon1.selftest`) |
-| `SetWakeIgnore(as sources)` | Save the charger wakeup sources a guided test confirmed fire on every quiet wake. Only AC and USB power supplies, by exact name (polkit action `org.pbc.daemon1.selftest`) |
+| `ConfirmCapability(s key, b working)` | Save a guided-test result. An empty key clears all (polkit action `org.pbc.daemon1.selftest`) |
 | `Changed` signal | Something the UI shows has changed |
 | `Mode`, `State`, `Plugged`, `Version` | Properties |
 

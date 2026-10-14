@@ -191,21 +191,6 @@ pub struct WakeDiagnosis {
     pub what: String,
     /// What to try next. Empty when there's nothing to change.
     pub fix: Vec<String>,
-    /// For `quiet_wake_ignore`: the charger sources that fired alongside the clock.
-    pub chargers: Vec<String>,
-}
-
-/// Does this wakeup source name look like a charger: an AC adapter or a USB-C
-/// power source? Used only to decide what to suggest. The hook itself checks
-/// the power supply's type before it ignores anything.
-pub fn looks_like_charger(name: &str) -> bool {
-    let n = name.to_ascii_lowercase();
-    n == "ac"
-        || n.starts_with("ac0")
-        || n.starts_with("adp")
-        || n.starts_with("ucsi-source-psy")
-        || n.starts_with("tcpm-source-psy")
-        || n.contains("-source-psy-")
 }
 
 /// Explain a test wake that wasn't clean. `post` and `normal_resume` details
@@ -214,7 +199,6 @@ pub fn diagnose_wake(decisions: &[(String, String)]) -> Option<WakeDiagnosis> {
     let say = |what: &str, fix: &[&str]| WakeDiagnosis {
         what: what.into(),
         fix: fix.iter().map(|s| s.to_string()).collect(),
-        chargers: Vec::new(),
     };
     if decisions.is_empty() {
         return Some(say(
@@ -258,25 +242,6 @@ pub fn diagnose_wake(decisions: &[(String, String)]) -> Option<WakeDiagnosis> {
             .split_whitespace()
             .map(|s| s.split_once("(+").map_or(s, |(n, _)| n).to_string())
             .collect();
-        let chargers: Vec<String> = others
-            .iter()
-            .filter(|s| looks_like_charger(s))
-            .cloned()
-            .collect();
-        if !chargers.is_empty() && chargers.len() == others.len() {
-            return Some(WakeDiagnosis {
-                what: format!(
-                    "The clock woke the laptop on time, but {} also reported a wake. Some laptops do this on every wake while plugged in, and pbcd treats it as a possible lid opening.",
-                    chargers.join(" and ")
-                ),
-                fix: vec![
-                    "If this happens on every try, add this line to /etc/pbcd/config.toml, then run: sudo systemctl restart pbcd".into(),
-                    format!("  quiet_wake_ignore = [{}]", chargers.iter().map(|c| format!("\"{c}\"")).collect::<Vec<_>>().join(", ")),
-                    "pbcd then allows it only while on AC with the lid closed, and waits longer before sleeping again.".into(),
-                ],
-                chargers,
-            });
-        }
         return Some(say(
             &format!("Something other than the clock woke the laptop: {}.", others.join(", ")),
             &[
@@ -303,9 +268,9 @@ pub fn diagnose_wake(decisions: &[(String, String)]) -> Option<WakeDiagnosis> {
             &[],
         ));
     }
-    if why.contains("ignored source fired while off AC") {
+    if why.contains("charger unplugged") {
         return Some(say(
-            "A charger source fired after the charger was unplugged.",
+            "The charger was unplugged during the test.",
             &["Keep the charger plugged in during the test."],
         ));
     }
@@ -380,31 +345,14 @@ mod tests {
     }
 
     #[test]
-    fn charger_on_every_wake_suggests_ignore() {
+    fn other_wake_sources_are_named() {
         let n = [
-            d("armed", "rtc wake at 1"),
-            d("post", "lid_closed=true frozen=Some(true) ac=true wake=[00:04(+1) ucsi-source-psy-USBC000:001(+1)] ignored=[] t-wake=3s nested=0"),
-            d("normal_resume", "other wake sources: ucsi-source-psy-USBC000:001(+1)"),
+            d("post", "wake=[rtc_cmos(+1) serio0(+1)] charger=[AC(+1)]"),
+            d("normal_resume", "other wake sources: serio0(+1)"),
         ];
         let g = diagnose_wake(&n).unwrap();
-        assert_eq!(g.chargers, ["ucsi-source-psy-USBC000:001"]);
-        assert!(
-            g.fix
-                .iter()
-                .any(|l| l.contains(r#"quiet_wake_ignore = ["ucsi-source-psy-USBC000:001"]"#)),
-            "{g:?}"
-        );
-    }
-
-    #[test]
-    fn keyboard_wake_is_not_offered_as_ignorable() {
-        let n = [
-            d("post", "wake=[rtc_cmos(+1) serio0(+1) AC(+1)]"),
-            d("normal_resume", "other wake sources: AC(+1) serio0(+1)"),
-        ];
-        let g = diagnose_wake(&n).unwrap();
-        assert!(g.chargers.is_empty());
-        assert!(!g.fix.iter().any(|l| l.contains("quiet_wake_ignore")));
+        assert!(g.what.contains("serio0"), "{g:?}");
+        assert!(!g.what.contains("AC"), "{g:?}");
     }
 
     #[test]

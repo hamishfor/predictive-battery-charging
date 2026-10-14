@@ -56,8 +56,6 @@ struct Ctx {
     bats: Vec<Battery>,
     rules: pbc_hw::profile::ThresholdRules,
     opts: Opts,
-    ignore_wake: Vec<String>,
-    saved_ignore: Vec<String>,
 }
 
 impl Ctx {
@@ -105,23 +103,12 @@ pub fn run(sysfs: &std::path::Path, opts: Opts) -> Result<()> {
         bail!("no battery exposes charge limits");
     }
     // Fail early if pbcd can't take results.
-    let status = bus::status(opts.user_bus).context("pbcd must be running to save results")?;
-    let strings = |v: &serde_json::Value| -> Vec<String> {
-        v.as_array()
-            .into_iter()
-            .flatten()
-            .filter_map(|v| v.as_str().map(String::from))
-            .collect()
-    };
-    let ignore_wake = strings(&status["quiet_wake_ignore"]);
-    let saved_ignore = strings(&status["selftest_wake_ignore"]);
+    bus::call(opts.user_bus, "StatusJson", &[]).context("pbcd must be running to save results")?;
     let cx = Ctx {
         root,
         bats,
         rules: p.thresholds.clone(),
         opts,
-        ignore_wake,
-        saved_ignore,
     };
 
     println!(
@@ -204,78 +191,39 @@ fn quiet_wake(cx: &Ctx) -> Result<()> {
     pause("  Plug in the charger and unplug any external monitor.")?;
     use pbc_model::selfcheck::{classify_wake, diagnose_wake, WakeOutcome};
 
-    let mut ignore = cx.ignore_wake.clone();
-    // Charger sources this run found and the user agreed to allow.
-    let mut allowed: Vec<String> = Vec::new();
-    loop {
-        let decisions = test_wake(cx, &ignore)?;
-        let diagnosis = diagnose_wake(&decisions);
-        let explain = || {
-            if let Some(g) = &diagnosis {
-                println!("  {}", g.what);
+    let decisions = test_wake(cx)?;
+    let explain = || {
+        if let Some(g) = diagnose_wake(&decisions) {
+            println!("  {}", g.what);
+            for l in &g.fix {
+                println!("  {l}");
             }
-        };
-        match classify_wake(&decisions) {
-            WakeOutcome::Clean => {
-                println!("  The wake ran and the laptop went back to sleep.");
-                break;
-            }
-            WakeOutcome::Bad(why) => {
-                println!("  The wake went wrong: {why}");
-                explain();
-                cx.save("quiet_wake", false)?;
-                return Ok(());
-            }
-            WakeOutcome::NotTested => {
-                println!("  The test wake didn't finish.");
-                explain();
-                let new: Vec<String> = diagnosis
-                    .as_ref()
-                    .map(|g| g.chargers.clone())
-                    .unwrap_or_default()
-                    .into_iter()
-                    .filter(|c| !ignore.contains(c))
-                    .collect();
-                if !new.is_empty() {
-                    println!("  pbcd can allow {} during quiet wakes, only while on AC with the lid closed,", new.join(" and "));
-                    println!("  and it then waits longer before sleeping again. A second test wake checks that this works.");
-                    if ask("  Allow it and run the test wake again?")? {
-                        ignore.extend(new.iter().cloned());
-                        allowed.extend(new);
-                        continue;
-                    }
-                } else if let Some(g) = &diagnosis {
-                    for l in &g.fix {
-                        println!("  {l}");
-                    }
-                }
-                println!(
-                    "  Nothing was saved. Run `sudo pbcctl selftest --only quiet_wake` to try again."
-                );
-                return Ok(());
-            }
+        }
+    };
+    match classify_wake(&decisions) {
+        WakeOutcome::Clean => println!("  The wake ran and the laptop went back to sleep."),
+        WakeOutcome::Bad(why) => {
+            println!("  The wake went wrong: {why}");
+            explain();
+            cx.save("quiet_wake", false)?;
+            return Ok(());
+        }
+        WakeOutcome::NotTested => {
+            println!("  The test wake didn't finish.");
+            explain();
+            println!(
+                "  Nothing was saved. Run `sudo pbcctl selftest --only quiet_wake` to try again."
+            );
+            return Ok(());
         }
     }
     let silent = ask("  Was the laptop dark and silent the whole time? (no screen, keyboard light, fan, sound or headphone reconnect)")?;
-    if silent && !allowed.is_empty() {
-        let mut keep = cx.saved_ignore.clone();
-        for a in allowed {
-            if !keep.contains(&a) {
-                keep.push(a);
-            }
-        }
-        let mut args = vec!["as".to_string(), keep.len().to_string()];
-        args.extend(keep.iter().cloned());
-        let args: Vec<&str> = args.iter().map(String::as_str).collect();
-        bus::call(cx.opts.user_bus, "SetWakeIgnore", &args)?;
-        println!("  saved: quiet wakes allow {}", keep.join(", "));
-    }
     cx.save("quiet_wake", silent)?;
     Ok(())
 }
 
 /// Arm one test wake, wait for the user, and return the hook's decisions.
-fn test_wake(cx: &Ctx, ignore: &[String]) -> Result<Vec<(String, String)>> {
+fn test_wake(cx: &Ctx) -> Result<Vec<(String, String)>> {
     let dir = std::path::Path::new(RUNTIME_DIR);
     let wake_at = now() + 120;
     let log = dir.join("wake-log.jsonl");
@@ -290,7 +238,6 @@ fn test_wake(cx: &Ctx, ignore: &[String]) -> Result<Vec<(String, String)>> {
         "batteries": cx.bats.iter().map(|b| cx.root.path(format!("class/power_supply/{}", b.name))).collect::<Vec<_>>(),
         "min_gap": cx.rules.min_gap,
         "selftest": true,
-        "ignore_wake": ignore,
     });
     std::fs::create_dir_all(dir)?;
     std::fs::write(dir.join("wake-plan.json"), plan.to_string())?;

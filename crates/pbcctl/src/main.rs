@@ -466,8 +466,8 @@ fn main() -> Result<()> {
 
 /// Everything needed to judge support for a laptop. Reads only; writes nothing.
 fn report(cli: &Cli, user_bus: bool, write: Option<&std::path::Path>) -> Result<()> {
-    use pbc_hw::report::{collect, Check, CheckVerdict, Evidence, ModelFile};
-    use pbc_model::selfcheck::{Record, Source, Verdict};
+    use pbc_hw::report::{collect, Check, ModelFile};
+    use pbc_model::selfcheck::{Capability, Record, Source, Verdict};
     let root = SysRoot::new(&cli.sysfs);
     let ps = profiles(cli)?;
     let (mut file, mut r) = collect(&root, &ps);
@@ -510,25 +510,16 @@ fn report(cli: &Cli, user_bus: bool, write: Option<&std::path::Path>) -> Result<
             let recs: Vec<Record> =
                 serde_json::from_value(st["capabilities"].clone()).unwrap_or_default();
             for c in recs {
-                r.checks.insert(
-                    c.capability.key().into(),
-                    Check {
-                        verdict: match c.verdict() {
-                            Verdict::Working => CheckVerdict::Working,
-                            Verdict::Failed => CheckVerdict::Failed,
-                            Verdict::Unknown => CheckVerdict::Unknown,
-                        },
-                        evidence: match c.source() {
-                            Some(Source::Confirmed) => Evidence::Confirmed,
-                            Some(Source::Observed) => Evidence::Observed,
-                            None => Evidence::None,
-                        },
-                        passes: c.passes,
-                        failures: c.failures,
-                        last: c.last_ts.map(date),
-                        last_failure: c.last_failure,
-                    },
-                );
+                // Only a person can tell that a quiet wake stayed dark and silent.
+                let unconfirmed =
+                    c.capability == Capability::QuietWake && c.source() != Some(Source::Confirmed);
+                let check = match c.verdict() {
+                    Verdict::Working if unconfirmed => Check::Untested,
+                    Verdict::Working => Check::Working,
+                    Verdict::Failed => Check::Failed,
+                    Verdict::Unknown => Check::Untested,
+                };
+                r.checks.insert(c.capability.key().into(), check);
             }
             for b in st["charge_curve_min"].as_array().into_iter().flatten() {
                 if let (Some(lo), Some(m)) = (b[0].as_u64(), b[1].as_f64()) {

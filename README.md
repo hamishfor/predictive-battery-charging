@@ -33,8 +33,8 @@ Devices with the status: `tested` in the following support list will get all fea
 | Lenovo | ThinkPad E | 430+ | `lenovo-thinkpad` | Expected to work |
 | Lenovo | ThinkPad L | 420+ | `lenovo-thinkpad` | Expected to work |
 | Lenovo | ThinkPad P | 51/71+ | `lenovo-thinkpad` | Expected to work |
-| Lenovo | ThinkPad T Series | 420+ | `lenovo-thinkpad` | Expected to work |
-| Lenovo | ThinkPad T Carbon | 480 | `lenovo-thinkpad` | Tested |
+| Lenovo | ThinkPad T | 420+ | `lenovo-thinkpad` | Expected to work |
+| Lenovo | ThinkPad T | 480 | `lenovo-thinkpad` | Tested |
 | Lenovo | ThinkPad X | 220+ | `lenovo-thinkpad` | Expected to work |
 | Lenovo | ThinkPad X1 Carbon | Gen 1+ | `lenovo-thinkpad` | Expected to work |
 | Lenovo | ThinkPad X1 Carbon | Gen 13 | `lenovo-thinkpad` | Tested |
@@ -184,7 +184,6 @@ All settings live in `/etc/pbcd/config.toml`, with comments. Restart the daemon 
 | `ready_pct` | `90` | The level it steps up to when an unplug may be near |
 | `floor_pct` | `25` | Always charge below this level, whatever is learned or scheduled. On two-battery models it uses the combined charge. |
 | `quiet_wake` | `auto` | Brief wake during sleep to finish charging |
-| `quiet_wake_ignore` | `[]` | Charger wakeup sources that fire on every wake on this laptop. `pbcctl selftest` required on some laptops to reliable detect wake. |
 | `upower_switch` | `true` | Use GNOME's Battery Charging setting as the on/off switch |
 
 ## Uninstall

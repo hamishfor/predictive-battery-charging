@@ -74,8 +74,8 @@ Check the report first:
 Then:
 
 1. **Add or extend a profile** in `profiles/`. Copy `profiles/lenovo-thinkpad.toml`, and set the `[match]` section from the report's `vendor` and `model`, plus a driver from its `drivers`. Set `[thresholds]` from your firmware's accepted ranges. [DEVELOPMENT.md](DEVELOPMENT.md#hardware-profiles) explains every field. A new profile file must also be added to `BUILTIN` in `crates/pbc-hw/src/profile.rs`. Then run `pbcctl report --write` again, so the report names the new profile.
-2. **Mark the quiet wake validated,** only if the report's `quiet_wake` check reads `verdict: working` and `evidence: confirmed`. Add the report's `model`, exactly as written, to `[quiet_wake] validated` in the profile. If it only passed with `quiet_wake_ignore` set, add that list for the model too, for example `ignore."ThinkPad T480" = ["ucsi-source-psy-*"]` under `[quiet_wake]`, so other owners of that model don't need the config line.
-3. **Add a row** to the supported-hardware table in `README.md`, with the manufacturer, family, generation and profile. Use "Tested" only if every check reads `working` and `confirmed`. Otherwise use "Expected to work, untested".
+2. **Mark the quiet wake validated,** only if the report's `quiet_wake` check reads `working`. Add the report's `model`, exactly as written, to `[quiet_wake] validated` in the profile.
+3. **Add a row** to the supported-hardware table in `README.md`, with the manufacturer, family, generation and profile. Use "Tested" only if every check reads `working`. Otherwise use "Expected to work".
 4. **Run the checks:**
 
    ```sh
@@ -91,7 +91,7 @@ If your laptop fails a step in the guided test, the scripts in `spike/` check ea
 
 - **The battery won't charge past a certain level:** run `pbcctl charge-now` to charge to full this time. To turn limits off altogether, run `sudo systemctl stop pbcd`, then `sudo pbcctl full` to set normal charging (0/100) on every battery.
 - **The laptop won't stay asleep:** set `quiet_wake = "off"` in `/etc/pbcd/config.toml`, then run `sudo systemctl restart pbcd`.
-- **The quiet-wake test says "the test wake didn't finish":** The most common case is a charger that reports a wake every time. The test offers to allow it and run a second test wake. If that wake is clean and you confirm the laptop stayed dark and silent, pbcd saves the setting. You can reset this with `sudo pbcctl selftest --reset`. If the laptop did wake, you may decline, and pbcctl will set `quiet_wake_ignore`.
+- **The quiet-wake test says "the test wake didn't finish":** the lines after it say what stopped the wake and what to try. The hook's full log is in `sudo journalctl -k -b | grep pbcd-sleep-hook`.
 - **A result looks wrong:** `sudo pbcctl selftest --reset` clears confirmed results. To clear everything, including what it observed, uninstall with `--purge` and reinstall.
 
 ## Developers

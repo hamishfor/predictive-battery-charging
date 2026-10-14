@@ -1,4 +1,4 @@
-schema: 1
+schema: 2
 vendor: LENOVO
 family: ThinkPad T480
 model: ThinkPad T480
@@ -42,25 +42,7 @@ reports:
     ucsi-source-psy-USBC000:001: USB
     ucsi-source-psy-USBC000:002: USB
   checks:
-    enforce:
-      verdict: working
-      evidence: confirmed
-      passes: 0
-      failures: 0
-    persist:
-      verdict: unknown
-      evidence: none
-      passes: 0
-      failures: 0
-    quiet_wake:
-      verdict: working
-      evidence: confirmed
-      passes: 0
-      failures: 0
-    resume:
-      verdict: working
-      evidence: confirmed
-      passes: 3
-      failures: 1
-      last: 2026-10-14
-      last_failure: charging did not resume after the limit was raised
+    enforce: working
+    persist: untested
+    quiet_wake: working
+    resume: working

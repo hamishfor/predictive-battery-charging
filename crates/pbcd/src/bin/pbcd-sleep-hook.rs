@@ -12,16 +12,16 @@
 //!
 //! A wake is ours only if all of these hold, otherwise it resumes normally:
 //! maintenance has not run this sleep; the clock is within 5 s before to 60 s
-//! after the planned time; the RTC wakeup count went up; no other wakeup
-//! source changed (lid, power button, keyboard, USB, and AC/USB-C power
-//! supplies, which some laptops fire before the lid on opening); the lid
-//! reads closed; and user.slice is not thawed. Re-suspend goes through the
-//! wakeup_count handshake, so a lid opening at any moment aborts it.
+//! after the planned time; the RTC wakeup count went up; no wakeup source
+//! that a person would use changed (lid, power button, keyboard, USB devices);
+//! the lid reads closed; and user.slice is not thawed. Re-suspend goes through
+//! the wakeup_count handshake, so a lid opening at any moment aborts it.
 //!
-//! Some laptops fire a power supply on every wake while plugged in. The plan's
-//! `ignore_wake` list names those. A listed source is tolerated only if it is a
-//! Mains or USB power supply and AC is online, and the settle window is then
-//! longer, so a lid opening that fired it first still shows before re-suspend.
+//! Chargers (Mains and USB power supplies) are judged by the timing instead.
+//! Some laptops fire one on every wake while plugged in, and others fire one
+//! about 3 s before the lid reads open. So a charger event alongside an on-time
+//! RTC wake is accepted while AC is online, and the settle window is then
+//! doubled, so a lid opening behind it still shows before re-suspend.
 
 #[path = "../wakeplan.rs"]
 mod wakeplan;
@@ -47,9 +47,9 @@ const WRITE_DEADLINE: Duration = Duration::from_secs(5);
 /// Minimum time from kernel resume to re-suspend. The lid can read closed for
 /// about 3 s after resume, and our own write causes power_supply events that need to settle.
 const SETTLE: Duration = Duration::from_millis(3000);
-/// The settle window when an ignored power-supply source fired. Twice the
-/// usual, because that source may be the first sign of a lid opening.
-const SETTLE_IGNORED: Duration = Duration::from_millis(6000);
+/// The settle window when a charger also fired. Twice the usual, because on
+/// some laptops a charger event is the first sign of a lid opening.
+const SETTLE_CHARGER: Duration = Duration::from_millis(6000);
 /// Typical delay from kernel resume to post-hook start.
 const POST_START: Duration = Duration::from_millis(600);
 const EARLY_S: i64 = 5;
@@ -87,17 +87,13 @@ fn snapshot() -> HashMap<String, u64> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Source {
     Rtc,
-    /// Listed in the plan's `ignore_wake`, and a Mains or USB power supply.
-    Ignored,
+    /// A Mains or USB power supply.
+    Charger,
     Other,
 }
 
 /// Wakeup sources whose event count went up, as (kind, "name(+n)").
-fn changed(
-    before: &HashMap<String, u64>,
-    after: &HashMap<String, u64>,
-    ignore: &[String],
-) -> Vec<(Source, String)> {
+fn changed(before: &HashMap<String, u64>, after: &HashMap<String, u64>) -> Vec<(Source, String)> {
     let rtc_dirs = rtc_wakeup_dirs();
     let mut v: Vec<(Source, String)> = after
         .iter()
@@ -109,8 +105,8 @@ fn changed(
                 || name.starts_with("alarmtimer")
             {
                 Source::Rtc
-            } else if wakeplan::ignore_matches(ignore, name) && is_charger(name) {
-                Source::Ignored
+            } else if is_charger(name) {
+                Source::Charger
             } else {
                 Source::Other
             };
@@ -121,8 +117,8 @@ fn changed(
     v
 }
 
-/// Is `name` a Mains or USB power supply? Only these can be ignored, so a
-/// config entry can never hide a keyboard, lid or power button.
+/// Is `name` a Mains or USB power supply? Read from its `type`, so a keyboard,
+/// lid or power button can never count as one, whatever it's called.
 fn is_charger(name: &str) -> bool {
     !name.contains('/')
         && matches!(
@@ -297,22 +293,22 @@ fn main() {
     loop {
         let t_resume = Instant::now();
         let after = snapshot();
-        let ch = changed(&base, &after, &plan.ignore_wake);
-        let ignored = ch.iter().any(|(k, _)| *k == Source::Ignored);
+        let ch = changed(&base, &after);
+        let charger = ch.iter().any(|(k, _)| *k == Source::Charger);
         let t = now();
         h.log(
             "post",
             format!(
-                "lid_closed={} frozen={:?} ac={} wake=[{}] ignored=[{}] t-wake={}s nested={nested}",
+                "lid_closed={} frozen={:?} ac={} wake=[{}] charger=[{}] t-wake={}s nested={nested}",
                 lid_closed(),
                 user_slice_frozen(),
                 ac_online(),
                 ch.iter()
-                    .filter(|(k, _)| *k != Source::Ignored)
+                    .filter(|(k, _)| *k != Source::Charger)
                     .map(|(_, s)| s.as_str())
                     .collect::<Vec<_>>()
                     .join(" "),
-                labels(&ch, Source::Ignored),
+                labels(&ch, Source::Charger),
                 t - plan.wake_at
             ),
         );
@@ -333,10 +329,11 @@ fn main() {
                 labels(&ch, Source::Other)
             ));
         }
-        if ignored && !ac_online() {
+        // A charger event with no AC means it was just unplugged: someone is there.
+        if charger && !ac_online() {
             h.normal(format!(
-                "ignored source fired while off AC: {}",
-                labels(&ch, Source::Ignored)
+                "charger unplugged: {}",
+                labels(&ch, Source::Charger)
             ));
         }
         if !lid_closed() {
@@ -395,7 +392,7 @@ fn main() {
         }
 
         // Settle window, polling the lid.
-        let settle = if ignored { SETTLE_IGNORED } else { SETTLE }.saturating_sub(POST_START);
+        let settle = if charger { SETTLE_CHARGER } else { SETTLE }.saturating_sub(POST_START);
         while t_resume.elapsed() < settle {
             if !lid_closed() {
                 h.normal("lid opened during settle window");

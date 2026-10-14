@@ -31,8 +31,8 @@ GitHub opens this template when the compare URL ends in
 - [ ] Every battery in the report has `start_threshold: true` and `end_threshold: true`
 - [ ] `[match]` uses the report's `vendor` and `model`, and a driver from its `drivers`
 - [ ] `[thresholds]` ranges and `min_gap` match what the firmware accepts
-- [ ] The report's `model` is added to `[quiet_wake] validated`, only if its `quiet_wake` check is `working` and `confirmed`
-- [ ] A row is added to the supported-hardware table in `README.md`, marked "Tested" only if every check is `working` and `confirmed`
+- [ ] The report's `model` is added to `[quiet_wake] validated`, only if its `quiet_wake` check is `working`
+- [ ] A row is added to the supported-hardware table in `README.md`, marked "Tested" only if every check is `working`
 - [ ] `cargo test` passes
 - [ ] `cargo clippy --all-targets -- -D warnings` passes
 

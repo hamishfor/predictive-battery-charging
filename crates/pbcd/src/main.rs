@@ -99,39 +99,6 @@ pub struct Ctl {
     /// when the limit was last raised while plugged in.
     pub watch: Mutex<Watch>,
     pub resume_grace_s: i64,
-    /// `quiet_wake_ignore` from the profile and config. Fixed while pbcd runs.
-    pub ignore_wake_static: Vec<String>,
-}
-
-/// KV key for charger wakeup sources confirmed by `pbcctl selftest`, as a JSON list.
-pub const KV_SELFTEST_IGNORE: &str = "selftest_quiet_wake_ignore";
-
-impl Ctl {
-    /// Charger sources a selftest confirmed and saved.
-    pub async fn selftest_ignore(&self) -> Vec<String> {
-        let saved = self
-            .core
-            .lock()
-            .await
-            .store
-            .get(KV_SELFTEST_IGNORE)
-            .ok()
-            .flatten();
-        saved
-            .and_then(|s| serde_json::from_str(&s).ok())
-            .unwrap_or_default()
-    }
-
-    /// Every charger source the hook may tolerate: profile, config, then the selftest's.
-    pub async fn ignore_wake(&self) -> Vec<String> {
-        let mut v = self.ignore_wake_static.clone();
-        for s in self.selftest_ignore().await {
-            if !v.contains(&s) {
-                v.push(s);
-            }
-        }
-        v
-    }
 }
 
 #[derive(Default)]
@@ -283,6 +250,9 @@ async fn main() -> Result<()> {
     let args = Args::parse();
     let mut cfg = config::Config::load(&args.config)
         .with_context(|| format!("loading {}", args.config.display()))?;
+    if cfg.removed_quiet_wake_ignore.is_some() {
+        tracing::warn!("quiet_wake_ignore is no longer used and can be removed from the config: chargers are now judged by the wake's timing");
+    }
     if let Some(db) = args.db {
         cfg.db = db;
     }
@@ -322,16 +292,6 @@ async fn main() -> Result<()> {
         .profile
         .as_ref()
         .is_some_and(|p| p.quiet_wake.validated.iter().any(|m| m == dmi.model()));
-    // Charger wakeup sources the hook may tolerate: the profile's for this model, then the config's.
-    let ignore_wake: Vec<String> = hw
-        .profile
-        .as_ref()
-        .and_then(|p| p.quiet_wake.ignore.get(dmi.model()))
-        .into_iter()
-        .flatten()
-        .chain(&cfg.quiet_wake_ignore)
-        .cloned()
-        .collect();
     // Re-evaluated before every sleep, so a self-check failure takes effect the same night.
     let quiet_wake_now = |store: &Store| match cfg.quiet_wake {
         QuietWake::On => true,
@@ -427,7 +387,6 @@ async fn main() -> Result<()> {
         last_signalled: Mutex::new(None),
         watch: Mutex::new(Watch::default()),
         resume_grace_s: cfg.resume_grace_s,
-        ignore_wake_static: ignore_wake,
     });
 
     // D-Bus: our API, plus logind sleep/shutdown signals and UPower.
@@ -644,7 +603,6 @@ async fn before_sleep(ctl: &Ctl, cfg: &config::Config, quiet_wake: bool, hw: &hw
                 batteries,
                 min_gap: gap,
                 selftest: false,
-                ignore_wake: ctl.ignore_wake().await,
             };
             if let Err(e) = wakeplan::write(&cfg.runtime_dir, &plan) {
                 // Without a plan, the hook does nothing. Fall back to topping off now.

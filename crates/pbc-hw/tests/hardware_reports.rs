@@ -2,7 +2,7 @@
 //! must match the profile it names, and every `[quiet_wake] validated` model
 //! must have a report that confirms the quiet wake.
 
-use pbc_hw::report::{write_fake_sysfs, CheckVerdict, Evidence, ModelFile};
+use pbc_hw::report::{write_fake_sysfs, Check, ModelFile};
 use pbc_hw::*;
 use std::path::Path;
 
@@ -62,11 +62,9 @@ fn validated_models_have_a_confirmed_quiet_wake() {
             let ok = all.iter().any(|(_, f)| {
                 f.model == *model
                     && f.profile.as_deref() == Some(p.id.as_str())
-                    && f.reports.iter().any(|r| {
-                        r.checks.get("quiet_wake").is_some_and(|c| {
-                            c.verdict == CheckVerdict::Working && c.evidence == Evidence::Confirmed
-                        })
-                    })
+                    && f.reports
+                        .iter()
+                        .any(|r| r.checks.get("quiet_wake") == Some(&Check::Working))
             });
             assert!(
                 ok,

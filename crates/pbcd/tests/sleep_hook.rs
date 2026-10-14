@@ -238,14 +238,12 @@ fn lid_wake_source_is_normal_resume() {
 }
 
 #[test]
-fn keyboard_or_ac_event_is_normal_resume() {
-    for src in ["serio0", "AC"] {
-        let f = Fake::new("closed", true);
-        f.armed_rtc_wake();
-        f.bump(src);
-        let (log, _) = f.run("post");
-        assert!(log.contains("other wake sources"), "{src}: {log}");
-    }
+fn keyboard_event_is_normal_resume() {
+    let f = Fake::new("closed", true);
+    f.armed_rtc_wake();
+    f.bump("serio0");
+    let (log, _) = f.run("post");
+    assert!(log.contains("other wake sources: serio0"), "{log}");
 }
 
 #[test]
@@ -289,68 +287,67 @@ impl Fake {
         put(r, "/sys/class/wakeup/wakeup8/name", n);
         put(r, "/sys/class/wakeup/wakeup8/event_count", "10");
     }
+}
 
-    fn plan_ignoring(&self, wake_at: i64, ignore: &[&str]) {
-        let bat = self.root().join("sys/class/power_supply/BAT0");
-        let plan = serde_json::json!({"wake_at": wake_at, "start": 0, "end": 100, "batteries": [bat], "min_gap": 1, "ignore_wake": ignore});
-        fs::write(self.root().join("run/wake-plan.json"), plan.to_string()).unwrap();
+#[test]
+fn charger_events_with_an_on_time_rtc_wake_are_ours_with_a_longer_settle() {
+    // AC is the fake's Mains supply. The USB-C source is a second port.
+    for src in ["AC", "ucsi-source-psy-USBC000:001"] {
+        let f = Fake::new("closed", true);
+        f.add_ucsi();
+        f.armed_rtc_wake();
+        f.bump(src);
+        let (log, took) = f.run("post");
+        assert!(
+            log.contains(&format!("charger=[{src}(+1)]")),
+            "{src}: {log}"
+        );
+        assert!(log.contains("resuspend"), "{src}: {log}");
+        assert!(
+            took >= Duration::from_millis(5300),
+            "{src}: longer settle, took {took:?}"
+        );
     }
 }
 
 #[test]
-fn unlisted_charger_wake_is_normal_resume() {
+fn charger_event_without_an_rtc_wake_is_normal_resume() {
     let f = Fake::new("closed", true);
+    f.add_ucsi();
+    f.plan(now());
+    f.run("pre");
+    f.bump("ucsi-source-psy-USBC000:001");
+    let (log, _) = f.run("post");
+    assert!(log.contains("rtc did not fire"), "{log}");
+}
+
+#[test]
+fn charger_event_off_ac_is_normal_resume() {
+    let f = Fake::new("closed", false);
     f.add_ucsi();
     f.armed_rtc_wake();
     f.bump("ucsi-source-psy-USBC000:001");
     let (log, _) = f.run("post");
+    assert!(log.contains("charger unplugged"), "{log}");
+}
+
+#[test]
+fn a_keyboard_named_like_a_charger_is_still_a_person() {
+    // Only the power supply's type makes a source a charger, never its name.
+    let f = Fake::new("closed", true);
+    put(
+        f.root(),
+        "/sys/class/wakeup/wakeup9/name",
+        "ucsi-source-psy-fake",
+    );
+    put(f.root(), "/sys/class/wakeup/wakeup9/event_count", "10");
+    f.armed_rtc_wake();
+    f.bump("ucsi-source-psy-fake");
+    let (log, _) = f.run("post");
     assert!(
-        log.contains("other wake sources: ucsi-source-psy-USBC000:001"),
+        log.contains("other wake sources: ucsi-source-psy-fake"),
         "{log}"
     );
-}
-
-#[test]
-fn listed_charger_wake_is_ours_with_a_longer_settle() {
-    let f = Fake::new("closed", true);
-    f.add_ucsi();
-    f.plan_ignoring(now(), &["ucsi-source-psy-*"]);
-    f.run("pre");
-    f.bump("rtc_cmos");
-    f.bump("ucsi-source-psy-USBC000:001");
-    let (log, took) = f.run("post");
-    assert!(
-        log.contains("ignored=[ucsi-source-psy-USBC000:001(+1)]"),
-        "{log}"
-    );
-    assert!(log.contains("resuspend"), "{log}");
-    assert!(
-        took >= Duration::from_millis(5300),
-        "longer settle, took {took:?}"
-    );
-}
-
-#[test]
-fn ignore_list_cannot_hide_a_non_charger() {
-    let f = Fake::new("closed", true);
-    f.plan_ignoring(now(), &["serio0", "PNP0C0D:00"]);
-    f.run("pre");
-    f.bump("rtc_cmos");
-    f.bump("serio0");
-    let (log, _) = f.run("post");
-    assert!(log.contains("other wake sources: serio0"), "{log}");
-}
-
-#[test]
-fn listed_charger_wake_off_ac_is_normal_resume() {
-    let f = Fake::new("closed", false);
-    f.add_ucsi();
-    f.plan_ignoring(now(), &["ucsi-source-psy-USBC000:001"]);
-    f.run("pre");
-    f.bump("rtc_cmos");
-    f.bump("ucsi-source-psy-USBC000:001");
-    let (log, _) = f.run("post");
-    assert!(log.contains("ignored source fired while off AC"), "{log}");
 }
 
 #[test]
