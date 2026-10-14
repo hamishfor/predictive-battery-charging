@@ -4,13 +4,9 @@
 [![Latest release](https://img.shields.io/github/v/release/hamishfor/predictive-battery-charging?include_prereleases)](https://github.com/hamishfor/predictive-battery-charging/releases/latest)
 [![License: GPL v3+](https://img.shields.io/badge/license-GPL--3.0--or--later-blue)](LICENSE)
 
-The battery health tooling for Linux is crude, Gnome's own tooling just holds the battery at 80%, you can switch profiles to then fully charge, but you have to;
-- Remember to select fully charge 30 minutes before you intend to unplug.
-- Remember to return the setting afterwards. 
+Predictive Battery Charging (`PBC`) is a smart battery health management tool, at it's core, it tries to extend the health of you devices battery by reducing the amount of time it sits at 100% by using a statistical model based on your behaviour to try and predict when your laptop charges and when it requires battery. As you use your laptop it learns about your relationship with your laptops battery and uses that information to hold back charging your device to full during certain charging sessions.
 
-Predictive Battery Charging (`PBC`), is the result of a desire for more automated battery health control.
-
-Currently, it's what I'd describe as cautious. It will charge fully untill it reaches a degree of confidence around your schedule where it will start to hold your battery back, only finishing charging when it gets near to when it thinks you'll unplug. Schedules will give it a confidence level of 1, so will more confidently frequently hold back charging. If you absolutely rely on your laptops battery to be at 100% whenever you unplug it. I can't recommend installing PBC.
+Currently, it's programmed to be what I'd describe as cautious. It will charge fully untill it reaches a degree of confidence around your schedule where it will start to hold your battery back, only finishing charging when it gets near to when it thinks you'll unplug. Schedules will give it a confidence level of 1, so will more confidently frequently hold back charging.
 
 It runs as a small system daemon (`pbcd`), with an optional GNOME Shell extension to execute common battery management tasks and display information.
 

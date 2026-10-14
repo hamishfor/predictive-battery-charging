@@ -10,11 +10,4 @@ Section: admin
 Priority: optional
 Homepage: https://github.com/hamishfor/predictive-battery-charging
 Description: Predictive battery charging for Linux laptops
- Holds the battery below full while plugged in, and finishes charging shortly
- before you usually unplug, like macOS Optimized Battery Charging. It learns
- your routine from plug-in history, which stays on the laptop.
- .
- pbcd writes the kernel's standard charge-limit files on laptops with a
- matching hardware profile (ThinkPads to start with). On other laptops it only
- records charging activity. Includes the pbcctl command and a GNOME Quick
- Settings tile.
+ Predictive Battery Charging (`PBC`) is a smart battery health management tool, at its core, it tries to extend the health of you devices battery by reducing the amount of time it sits at 100% by using a statistical model based on your behaviour to try and predict when your laptop charges and when it requires battery. As you use your laptop it learns about your relationship with your laptops battery and uses that information to hold back charging your device to full during certain charging sessions.
