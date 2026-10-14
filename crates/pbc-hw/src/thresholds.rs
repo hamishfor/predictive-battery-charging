@@ -1,6 +1,6 @@
 use crate::battery::Battery;
 use crate::profile::ThresholdRules;
-use crate::sysfs::SysRoot;
+use crate::sysfs::{SysRoot, END_THRESHOLD, START_THRESHOLD};
 use std::fmt;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -99,8 +99,8 @@ pub fn apply(
         .ok_or_else(|| ThresholdError::Unsupported(bat.name.clone()))?;
     for (which, value) in plan_writes(current, target, rules.min_gap) {
         let attr = match which {
-            Which::Start => "charge_control_start_threshold",
-            Which::End => "charge_control_end_threshold",
+            Which::Start => START_THRESHOLD,
+            Which::End => END_THRESHOLD,
         };
         root.write(bat.attr(attr), &value.to_string())
             .map_err(|source| ThresholdError::Io {

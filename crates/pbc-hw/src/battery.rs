@@ -1,8 +1,6 @@
-use crate::sysfs::SysRoot;
+use crate::sysfs::{choices, SysRoot, END_THRESHOLD, PSY, START_THRESHOLD};
 use crate::thresholds::Thresholds;
 use std::io;
-
-const PSY: &str = "class/power_supply";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 pub enum BatteryStatus {
@@ -84,22 +82,20 @@ impl Battery {
     }
 
     pub fn has_thresholds(&self) -> bool {
-        self.root.exists(self.attr("charge_control_end_threshold"))
+        self.root.exists(self.attr(END_THRESHOLD))
     }
 
     pub fn thresholds(&self) -> Option<Thresholds> {
         Some(Thresholds {
-            start: self.u64("charge_control_start_threshold")? as u8,
-            end: self.u64("charge_control_end_threshold")? as u8,
+            start: self.u64(START_THRESHOLD)? as u8,
+            end: self.u64(END_THRESHOLD)? as u8,
         })
     }
 
     /// The active value of `charge_behaviour`, e.g. "auto" from "[auto] inhibit-charge".
     pub fn behaviour(&self) -> Option<String> {
         let raw = self.root.read_opt(self.attr("charge_behaviour"))?;
-        raw.split_whitespace()
-            .find(|t| t.starts_with('['))
-            .map(|t| t.trim_matches(|c| c == '[' || c == ']').to_string())
+        raw.contains('[').then(|| choices(&raw).swap_remove(0))
     }
 
     pub fn snapshot(&self) -> PowerSnapshot {

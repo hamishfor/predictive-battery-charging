@@ -2,6 +2,20 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
+pub const PSY: &str = "class/power_supply";
+pub const START_THRESHOLD: &str = "charge_control_start_threshold";
+pub const END_THRESHOLD: &str = "charge_control_end_threshold";
+
+/// Parse a sysfs choice list, e.g. "[s2idle] deep": active first, then the rest.
+pub fn choices(raw: &str) -> Vec<String> {
+    let mut v: Vec<(bool, &str)> = raw
+        .split_whitespace()
+        .map(|t| (t.starts_with('['), t.trim_matches(['[', ']'])))
+        .collect();
+    v.sort_by_key(|(active, _)| !active);
+    v.into_iter().map(|(_, t)| t.to_string()).collect()
+}
+
 /// Root of a sysfs-like tree. `SysRoot::system()` is the real `/sys`.
 #[derive(Debug, Clone)]
 pub struct SysRoot {

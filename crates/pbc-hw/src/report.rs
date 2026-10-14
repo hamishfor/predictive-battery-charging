@@ -10,7 +10,7 @@
 //! serial numbers, host names, usage history, battery wear or charge times,
 //! which describe one battery at one age rather than the model.
 
-use crate::sysfs::SysRoot;
+use crate::sysfs::{choices, SysRoot, END_THRESHOLD, PSY, START_THRESHOLD};
 use crate::{Battery, DmiInfo, Profile};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -188,30 +188,22 @@ pub fn collect(root: &SysRoot, profiles: &[Profile]) -> (ModelFile, Report) {
     drivers.sort();
     drivers.dedup();
 
-    // The active state, shown as `[s2idle]`, goes first.
-    let mut mem_sleep: Vec<(bool, String)> = root
-        .read_opt("power/mem_sleep")
-        .unwrap_or_default()
-        .split_whitespace()
-        .map(|t| (t.starts_with('['), t.trim_matches(['[', ']']).to_string()))
-        .collect();
-    mem_sleep.sort_by_key(|(active, _)| !active);
+    let mem_sleep = choices(&root.read_opt("power/mem_sleep").unwrap_or_default());
 
     let mut batteries = BTreeMap::new();
     for b in Battery::discover(root).unwrap_or_default() {
         let s = b.snapshot();
-        let behaviours = root
-            .read_opt(b.attr("charge_behaviour"))
-            .unwrap_or_default()
-            .split_whitespace()
-            .map(|t| t.trim_matches(['[', ']']).to_string())
-            .collect();
+        let behaviours = choices(
+            &root
+                .read_opt(b.attr("charge_behaviour"))
+                .unwrap_or_default(),
+        );
         let wh = |u: u64| (u as f64 / 1e5).round() / 10.0;
         batteries.insert(
             b.name.clone(),
             BatteryReport {
-                start_threshold: root.exists(b.attr("charge_control_start_threshold")),
-                end_threshold: root.exists(b.attr("charge_control_end_threshold")),
+                start_threshold: root.exists(b.attr(START_THRESHOLD)),
+                end_threshold: root.exists(b.attr(END_THRESHOLD)),
                 behaviours,
                 scope: root.read_opt(b.attr("scope")),
                 design_wh: s.energy_full_design_uwh.map(wh),
@@ -219,12 +211,12 @@ pub fn collect(root: &SysRoot, profiles: &[Profile]) -> (ModelFile, Report) {
         );
     }
     let other_supplies = root
-        .list("class/power_supply")
+        .list(PSY)
         .unwrap_or_default()
         .into_iter()
         .filter(|n| !batteries.contains_key(n))
         .filter_map(|n| {
-            let ty = root.read_opt(format!("class/power_supply/{n}/type"))?;
+            let ty = root.read_opt(format!("{PSY}/{n}/type"))?;
             (ty != "Battery").then_some((n, ty))
         })
         .collect();
@@ -251,7 +243,7 @@ pub fn collect(root: &SysRoot, profiles: &[Profile]) -> (ModelFile, Report) {
             .join(" ")
             .replace(" )", ")"),
         software: BTreeMap::new(),
-        mem_sleep: mem_sleep.into_iter().map(|(_, s)| s).collect(),
+        mem_sleep,
         rtc_wakealarm: root.exists("class/rtc/rtc0/wakealarm"),
         drivers,
         batteries,
@@ -278,10 +270,10 @@ pub fn write_fake_sysfs(file: &ModelFile, r: &Report, dir: &Path) -> std::io::Re
         std::fs::create_dir_all(dir.join("module").join(d))?;
     }
     for (name, ty) in &r.other_supplies {
-        put(&format!("class/power_supply/{name}/type"), ty)?;
+        put(&format!("{PSY}/{name}/type"), ty)?;
     }
     for (name, b) in &r.batteries {
-        let a = |f: &str| format!("class/power_supply/{name}/{f}");
+        let a = |f: &str| format!("{PSY}/{name}/{f}");
         put(&a("type"), "Battery")?;
         put(&a("present"), "1")?;
         put(&a("status"), "Discharging")?;
@@ -290,10 +282,10 @@ pub fn write_fake_sysfs(file: &ModelFile, r: &Report, dir: &Path) -> std::io::Re
             put(&a("scope"), s)?;
         }
         if b.start_threshold {
-            put(&a("charge_control_start_threshold"), "0")?;
+            put(&a(START_THRESHOLD), "0")?;
         }
         if b.end_threshold {
-            put(&a("charge_control_end_threshold"), "100")?;
+            put(&a(END_THRESHOLD), "100")?;
         }
         if !b.behaviours.is_empty() {
             let mut v = b.behaviours.clone();
