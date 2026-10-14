@@ -2,54 +2,39 @@
 
 use anyhow::{bail, Context, Result};
 
-/// Call a pbcd method. Returns the first string reply, or "" for methods with none.
-/// `args` is a busctl signature followed by values, e.g. ["sb", "quiet_wake", "true"].
-pub fn call(user_bus: bool, method: &str, args: &[&str]) -> Result<String> {
+const DAEMON: &str = "org.pbc.Daemon1";
+const PATH: &str = "/org/pbc/Daemon1";
+
+/// Run `busctl --json=short <verb> pbcd <member> <args>` and parse its JSON output.
+fn busctl(user_bus: bool, verb: &str, member: &str, args: &[&str]) -> Result<serde_json::Value> {
     let mut c = std::process::Command::new("busctl");
     if user_bus {
         c.arg("--user");
     }
-    c.args([
-        "--json=short",
-        "call",
-        "org.pbc.Daemon1",
-        "/org/pbc/Daemon1",
-        "org.pbc.Daemon1",
-        method,
-    ]);
+    c.args(["--json=short", verb, DAEMON, PATH, DAEMON, member]);
     c.args(args);
     let out = c.output().context("running busctl")?;
     if !out.status.success() {
         bail!("pbcd: {}", String::from_utf8_lossy(&out.stderr).trim());
     }
     if out.stdout.is_empty() {
-        return Ok(String::new());
+        return Ok(serde_json::Value::Null);
     }
-    // busctl --json gives {"type":"s","data":["<json>"]}
-    let v: serde_json::Value = serde_json::from_slice(&out.stdout)?;
+    Ok(serde_json::from_slice(&out.stdout)?)
+}
+
+/// Call a pbcd method. Returns the first string reply, or "" for methods with none.
+/// `args` is a busctl signature followed by values, e.g. ["sb", "quiet_wake", "true"].
+pub fn call(user_bus: bool, method: &str, args: &[&str]) -> Result<String> {
+    // {"type":"s","data":["<json>"]}
+    let v = busctl(user_bus, "call", method, args)?;
     Ok(v["data"][0].as_str().unwrap_or_default().to_string())
 }
 
 /// Read a string property of pbcd, such as "Version".
 pub fn property(user_bus: bool, name: &str) -> Result<String> {
-    let mut c = std::process::Command::new("busctl");
-    if user_bus {
-        c.arg("--user");
-    }
-    c.args([
-        "--json=short",
-        "get-property",
-        "org.pbc.Daemon1",
-        "/org/pbc/Daemon1",
-        "org.pbc.Daemon1",
-        name,
-    ]);
-    let out = c.output().context("running busctl")?;
-    if !out.status.success() {
-        bail!("{}", String::from_utf8_lossy(&out.stderr).trim());
-    }
-    // busctl --json gives {"type":"s","data":"<value>"}
-    let v: serde_json::Value = serde_json::from_slice(&out.stdout)?;
+    // {"type":"s","data":"<value>"}
+    let v = busctl(user_bus, "get-property", name, &[])?;
     Ok(v["data"].as_str().unwrap_or_default().to_string())
 }
 

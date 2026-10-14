@@ -400,26 +400,8 @@ fn main() -> Result<()> {
             }
         }
         Cmd::ChargeNow { cancel, user } => {
-            let mut c = std::process::Command::new("busctl");
-            if *user {
-                c.arg("--user");
-            }
             let on = if *cancel { "false" } else { "true" };
-            let out = c
-                .args([
-                    "call",
-                    "org.pbc.Daemon1",
-                    "/org/pbc/Daemon1",
-                    "org.pbc.Daemon1",
-                    "ChargeNow",
-                    "b",
-                    on,
-                ])
-                .output()
-                .context("running busctl")?;
-            if !out.status.success() {
-                bail!("{}", String::from_utf8_lossy(&out.stderr).trim());
-            }
+            bus::call(*user, "ChargeNow", &["b", on])?;
             println!(
                 "{}",
                 if *cancel {
