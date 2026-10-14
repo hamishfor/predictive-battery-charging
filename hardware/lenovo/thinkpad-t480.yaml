@@ -1,0 +1,66 @@
+schema: 1
+vendor: LENOVO
+family: ThinkPad T480
+model: ThinkPad T480
+profile: lenovo-thinkpad
+reports:
+- date: 2026-10-14
+  pbcctl: 0.3.0
+  product: 20L6S20900
+  version: ThinkPad T480
+  bios: N24ET81W (1.56)
+  software:
+    gnome_shell: '48.7'
+    kernel: 6.12.107+deb13-amd64
+    systemd: 257 (257.13-1~deb13u1)
+    upower: 1.90.9
+  mem_sleep:
+  - deep
+  - s2idle
+  rtc_wakealarm: true
+  drivers:
+  - thinkpad_acpi
+  batteries:
+    BAT0:
+      start_threshold: true
+      end_threshold: true
+      behaviours:
+      - auto
+      - inhibit-charge
+      - force-discharge
+      design_wh: 23.9
+    BAT1:
+      start_threshold: true
+      end_threshold: true
+      behaviours:
+      - auto
+      - inhibit-charge
+      - force-discharge
+      design_wh: 23.9
+  other_supplies:
+    AC: Mains
+    ucsi-source-psy-USBC000:001: USB
+    ucsi-source-psy-USBC000:002: USB
+  checks:
+    enforce:
+      verdict: working
+      evidence: confirmed
+      passes: 0
+      failures: 0
+    persist:
+      verdict: unknown
+      evidence: none
+      passes: 0
+      failures: 0
+    quiet_wake:
+      verdict: working
+      evidence: confirmed
+      passes: 0
+      failures: 0
+    resume:
+      verdict: working
+      evidence: confirmed
+      passes: 3
+      failures: 1
+      last: 2026-10-14
+      last_failure: charging did not resume after the limit was raised

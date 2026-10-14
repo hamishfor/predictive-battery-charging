@@ -34,6 +34,7 @@ Devices with the status: `tested` in the following support list will get all fea
 | Lenovo | ThinkPad L | 420+ | `lenovo-thinkpad` | Expected to work |
 | Lenovo | ThinkPad P | 51/71+ | `lenovo-thinkpad` | Expected to work |
 | Lenovo | ThinkPad T Series | 420+ | `lenovo-thinkpad` | Expected to work |
+| Lenovo | ThinkPad T Carbon | 480 | `lenovo-thinkpad` | Tested |
 | Lenovo | ThinkPad X | 220+ | `lenovo-thinkpad` | Expected to work |
 | Lenovo | ThinkPad X1 Carbon | Gen 1+ | `lenovo-thinkpad` | Expected to work |
 | Lenovo | ThinkPad X1 Carbon | Gen 13 | `lenovo-thinkpad` | Tested |
