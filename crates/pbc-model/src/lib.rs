@@ -18,6 +18,7 @@ pub mod learned;
 pub mod predict;
 pub mod selfcheck;
 pub mod session;
+pub mod stats;
 
 /// Unix seconds, UTC. Kept as a plain integer so the store and replay files stay simple.
 pub type Ts = i64;

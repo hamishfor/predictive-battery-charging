@@ -11,10 +11,8 @@
 
 use crate::predict::{Prediction, Predictor, Query};
 use crate::session::End;
+use crate::stats::{consistency, decay, local_minute, placeable, HOUR};
 use crate::Ts;
-use jiff::civil::Weekday;
-use jiff::tz::TimeZone;
-use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 
 /// Tunables. The defaults are deliberately cautious.
@@ -51,28 +49,6 @@ impl Default for RoutineConfig {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum DayKind {
-    Weekday,
-    Weekend,
-}
-
-fn day_kind(w: Weekday) -> DayKind {
-    match w {
-        Weekday::Saturday | Weekday::Sunday => DayKind::Weekend,
-        _ => DayKind::Weekday,
-    }
-}
-
-/// Minutes since local midnight, and the kind of day, for a timestamp.
-fn local(ts: Ts, tz: &TimeZone) -> Option<(i64, DayKind)> {
-    let z = Timestamp::from_second(ts).ok()?.to_zoned(tz.clone());
-    Some((
-        z.hour() as i64 * 60 + z.minute() as i64,
-        day_kind(z.weekday()),
-    ))
-}
-
 /// Circular distance between two minute-of-day values.
 fn minute_gap(a: i64, b: i64) -> i64 {
     let d = (a - b).rem_euclid(1440);
@@ -106,24 +82,19 @@ impl Routine {
     }
 
     fn similar(&self, q: &Query<'_>, start: Ts) -> Vec<Past> {
-        let Some((m0, k0)) = local(start, q.tz) else {
+        let Some((m0, k0)) = local_minute(start, q.tz) else {
             return Vec::new();
         };
         q.history
             .iter()
-            .filter(|s| q.now - s.plugged.lo <= self.cfg.max_age_days * 86400)
-            // An imprecise start (plugged in during sleep) can't be placed in the day.
-            .filter(|s| s.plugged.hi - s.plugged.lo <= 3600)
+            .filter(|s| placeable(s, q.now, self.cfg.max_age_days))
             .filter_map(|s| {
                 let st = s.plugged.mid();
-                let (m, k) = local(st, q.tz)?;
-                (k == k0 && minute_gap(m, m0) <= self.cfg.window_min).then(|| {
-                    let age_days = (q.now - st) as f64 / 86400.0;
-                    Past {
-                        dur: s.duration(),
-                        observed: matches!(s.end, End::Unplugged(_)),
-                        weight: 0.5f64.powf(age_days / self.cfg.half_life_days),
-                    }
+                let (m, k) = local_minute(st, q.tz)?;
+                (k == k0 && minute_gap(m, m0) <= self.cfg.window_min).then(|| Past {
+                    dur: s.duration(),
+                    observed: matches!(s.end, End::Unplugged(_)),
+                    weight: decay(q.now - st, self.cfg.half_life_days),
                 })
             })
             .collect()
@@ -167,11 +138,11 @@ impl Predictor for Routine {
         let long: Vec<Past> = sim
             .iter()
             .copied()
-            .filter(|p| p.dur as f64 >= self.cfg.min_session_h * 3600.0)
+            .filter(|p| p.dur as f64 >= self.cfg.min_session_h * HOUR as f64)
             .collect();
         let steps = survival(sim.clone());
         let dur = quantile(&steps, self.cfg.quantile)?;
-        if (dur as f64) < self.cfg.min_session_h * 3600.0 {
+        if (dur as f64) < self.cfg.min_session_h * HOUR as f64 {
             return None; // This routine is short top-ups: nothing to gain by holding.
         }
         let full_by = start + dur;
@@ -186,15 +157,13 @@ impl Predictor for Routine {
             let mean = ends.iter().sum::<i64>() as f64 / ends.len() as f64;
             (ends.iter().map(|d| (*d as f64 - mean).powi(2)).sum::<f64>() / ends.len() as f64)
                 .sqrt()
-                / 3600.0
+                / HOUR as f64
         } else {
             f64::INFINITY
         };
-        // One hour of spread is consistent. Three hours is barely a routine.
-        let consistency = (1.0 - (spread_h - 1.0) / 2.0).clamp(0.0, 1.0);
         let share_long = long.len() as f64 / sim.len() as f64;
         let confidence =
-            (support * consistency * share_long * self.accuracy_factor).clamp(0.0, 1.0);
+            (support * consistency(spread_h) * share_long * self.accuracy_factor).clamp(0.0, 1.0);
         Some(Prediction {
             full_by,
             confidence,
@@ -248,6 +217,7 @@ mod tests {
     use super::*;
     use crate::session::{Session, When};
     use jiff::civil::date;
+    use jiff::tz::TimeZone;
 
     const H: i64 = 3600;
     fn tz() -> TimeZone {
@@ -304,7 +274,7 @@ mod tests {
         let p = Routine::new(RoutineConfig::default(), 1.0)
             .predict(&query(start + 600, start, &h, &tz))
             .expect("prediction");
-        let (hh, mm) = local(p.full_by, &tz)
+        let (hh, mm) = local_minute(p.full_by, &tz)
             .map(|(m, _)| (m / 60, m % 60))
             .unwrap();
         assert!((7..=8).contains(&hh), "predicted unplug {hh}:{mm:02}");

@@ -19,9 +19,9 @@
 
 use crate::predict::{Prediction, Predictor, Query};
 use crate::session::{End, Session};
+use crate::stats::{consistency, decay, local_minute, placeable, DAY, HOUR};
 use crate::Ts;
 use jiff::tz::TimeZone;
-use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 
 pub const STEP_S: i64 = 1800;
@@ -85,25 +85,13 @@ pub struct HazardModel {
     pub trained_at: Ts,
 }
 
+/// Local half-hour of day (0..48), and whether it's a weekend.
 fn local(ts: Ts, tz: &TimeZone) -> (usize, bool) {
-    let z = Timestamp::from_second(ts)
-        .map(|t| t.to_zoned(tz.clone()))
-        .ok();
-    match z {
-        Some(z) => {
-            let half = (z.hour() as usize) * 2 + (z.minute() as usize) / 30;
-            let weekend = matches!(
-                z.weekday(),
-                jiff::civil::Weekday::Saturday | jiff::civil::Weekday::Sunday
-            );
-            (half, weekend)
-        }
-        None => (0, false),
-    }
+    local_minute(ts, tz).map_or((0, false), |(m, we)| (m as usize / 30, we))
 }
 
 fn elapsed_bin(secs: i64) -> usize {
-    let h = secs as f64 / 3600.0;
+    let h = secs as f64 / HOUR as f64;
     match h {
         h if h < 1.0 => 0,
         h if h < 2.0 => 1,
@@ -153,8 +141,7 @@ fn rows(history: &[Session], now: Ts, tz: &TimeZone, cfg: &HazardConfig) -> (Vec
     let mut out = Vec::new();
     let mut n = 0;
     for s in history {
-        // Plug-in during sleep: start unknown to within the hour, can't be placed in the day.
-        if s.plugged.hi - s.plugged.lo > 3600 || now - s.plugged.lo > cfg.max_age_days * 86400 {
+        if !placeable(s, now, cfg.max_age_days) {
             continue;
         }
         let start = s.plugged.mid();
@@ -166,7 +153,7 @@ fn rows(history: &[Session], now: Ts, tz: &TimeZone, cfg: &HazardConfig) -> (Vec
             continue;
         }
         n += 1;
-        let w = 0.5f64.powf(((now - start) as f64 / 86400.0) / cfg.half_life_days);
+        let w = decay(now - start, cfg.half_life_days);
         let mut t = start;
         while t < end {
             let last = t + STEP_S >= end;
@@ -230,7 +217,15 @@ pub struct Hazard<'a> {
     pub accuracy_factor: f64,
 }
 
-impl Hazard<'_> {
+impl<'a> Hazard<'a> {
+    pub fn new(model: &'a HazardModel, cfg: HazardConfig, accuracy_factor: f64) -> Self {
+        Self {
+            model,
+            cfg,
+            accuracy_factor,
+        }
+    }
+
     /// For each step from `from`: (step start, cumulative unplug probability by
     /// the step's end), given still plugged in at `from`.
     fn curve(&self, from: Ts, start: Ts, cap: Option<u8>, tz: &TimeZone) -> Vec<(Ts, f64)> {
@@ -265,19 +260,17 @@ impl Predictor for Hazard<'_> {
         // The start of the step in which the probability crosses `p`: cautious by up to a step.
         let at = |p: f64| c.iter().find(|(_, f)| *f >= p).map(|(t, _)| *t);
         let full_by = at(self.cfg.quantile)?;
-        if ((full_by - start) as f64) < self.cfg.min_session_h * 3600.0 {
+        if ((full_by - start) as f64) < self.cfg.min_session_h * HOUR as f64 {
             return None; // A short top-up: nothing to gain by holding.
         }
         // Confidence: a tight unplug window, and enough history. The window is
         // from the cautious time to the median. Later quantiles fall past the
         // last unplug in the data, where the model has learned nothing.
         let spread_h = at(0.5)
-            .map(|t50| (t50 - full_by) as f64 / 3600.0)
+            .map(|t50| (t50 - full_by) as f64 / HOUR as f64)
             .unwrap_or(f64::INFINITY);
-        // Within 1 h is consistent. 3 h or more is barely a routine.
-        let consistency = (1.0 - (spread_h - 1.0) / 2.0).clamp(0.0, 1.0);
         let support = (self.model.sessions as f64 / 30.0).min(1.0);
-        let confidence = (consistency * support * self.accuracy_factor).clamp(0.0, 1.0);
+        let confidence = (consistency(spread_h) * support * self.accuracy_factor).clamp(0.0, 1.0);
         Some(Prediction {
             full_by,
             confidence,
@@ -331,16 +324,12 @@ pub fn backtest(
 ) -> Backtest {
     let mut sessions: Vec<&Session> = history
         .iter()
-        .filter(|s| {
-            matches!(s.end, End::Unplugged(_))
-                && s.plugged.hi - s.plugged.lo <= 3600
-                && now - s.plugged.lo <= hcfg.max_age_days * 86400
-        })
+        .filter(|s| matches!(s.end, End::Unplugged(_)) && placeable(s, now, hcfg.max_age_days))
         .collect();
     sessions.sort_by_key(|s| s.plugged.lo);
     let (mut rl, mut ml, mut rlate, mut mlate, mut n) = (0.0, 0.0, 0usize, 0usize, 0usize);
     let tau = hcfg.quantile;
-    let week = 7 * 86400;
+    let week = 7 * DAY;
     let first = sessions.first().map(|s| s.plugged.lo).unwrap_or(now);
     let mut block = first + 2 * week; // two weeks to learn from before scoring
     while block < now {
@@ -356,7 +345,7 @@ pub fn backtest(
         {
             let start = s.plugged.mid();
             let End::Unplugged(e) = s.end else { continue };
-            let y = (e.mid() - start) as f64 / 3600.0;
+            let y = (e.mid() - start) as f64 / HOUR as f64;
             let at = start + 600;
             let q = Query {
                 now: at,
@@ -368,19 +357,16 @@ pub fn backtest(
             let score = |p: Option<Prediction>| -> (f64, bool) {
                 let d = p
                     .filter(|p| p.confidence >= 0.3)
-                    .map(|p| (p.full_by - start) as f64 / 3600.0)
+                    .map(|p| (p.full_by - start) as f64 / HOUR as f64)
                     .unwrap_or(0.0);
                 (pinball(y, d, tau), d > y)
             };
             let r = score(crate::learned::Routine::new(rcfg, 1.0).predict(&q));
-            let m = score(model.as_ref().and_then(|m| {
-                Hazard {
-                    model: m,
-                    cfg: hcfg,
-                    accuracy_factor: 1.0,
-                }
-                .predict(&q)
-            }));
+            let m = score(
+                model
+                    .as_ref()
+                    .and_then(|m| Hazard::new(m, hcfg, 1.0).predict(&q)),
+            );
             rl += r.0;
             ml += m.0;
             rlate += r.1 as usize;
@@ -410,7 +396,7 @@ pub fn backtest(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::learned::{Routine, RoutineConfig};
+    use crate::learned::RoutineConfig;
     use crate::session::When;
     use jiff::civil::date;
 
@@ -483,13 +469,9 @@ mod tests {
             history: &h,
             tz: &tz(),
         };
-        let p = Hazard {
-            model: &m,
-            cfg: HazardConfig::default(),
-            accuracy_factor: 1.0,
-        }
-        .predict(&q)
-        .expect("prediction");
+        let p = Hazard::new(&m, HazardConfig::default(), 1.0)
+            .predict(&q)
+            .expect("prediction");
         let (half, _) = local(p.full_by, &tz());
         assert!(
             (13..=16).contains(&half),
@@ -519,13 +501,9 @@ mod tests {
             history: &h,
             tz: &tz(),
         };
-        assert!(Hazard {
-            model: &m,
-            cfg: HazardConfig::default(),
-            accuracy_factor: 1.0
-        }
-        .predict(&q)
-        .is_none());
+        assert!(Hazard::new(&m, HazardConfig::default(), 1.0)
+            .predict(&q)
+            .is_none());
     }
 
     #[test]
@@ -551,13 +529,9 @@ mod tests {
             history: &h,
             tz: &tz(),
         };
-        assert!(Hazard {
-            model: &m,
-            cfg: HazardConfig::default(),
-            accuracy_factor: 1.0
-        }
-        .predict(&q)
-        .is_none());
+        assert!(Hazard::new(&m, HazardConfig::default(), 1.0)
+            .predict(&q)
+            .is_none());
     }
 
     #[test]
@@ -610,6 +584,5 @@ mod tests {
         if b.use_model {
             assert!(b.model_loss < b.routine_loss * MARGIN, "{b:?}");
         }
-        let _ = Routine::new(RoutineConfig::default(), 1.0);
     }
 }

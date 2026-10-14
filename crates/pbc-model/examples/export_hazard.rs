@@ -43,11 +43,7 @@ fn main() {
         history: &h,
         tz: &tz,
     };
-    let hz = Hazard {
-        model: &m,
-        cfg: HazardConfig::default(),
-        accuracy_factor: 1.0,
-    };
+    let hz = Hazard::new(&m, HazardConfig::default(), 1.0);
     let n = 10_000;
     let t1 = Instant::now();
     let mut last = None;
