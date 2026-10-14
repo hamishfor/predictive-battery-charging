@@ -2,7 +2,8 @@
 # Build the .deb and the GNOME extension zip into dist-out/.
 # Run from anywhere: packaging/build-deb.sh
 # Needs: cargo, dpkg-deb, gnome-extensions (from gnome-shell) or zip.
-# VERSION defaults to the workspace version in Cargo.toml. CI sets it from the tag.
+# VERSION defaults to the workspace version in Cargo.toml. A pre-release such
+# as 0.3.0-rc.1 is packaged as 0.3.0~rc.1, which Debian sorts before 0.3.0.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 # Package directories must be 755 whatever the caller's umask.
@@ -11,6 +12,7 @@ umask 022
 NAME=predictive-battery-charging
 UUID=predictive-battery-charging@pbc
 VERSION=${VERSION:-$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)}
+VERSION=${VERSION/-/\~}
 ARCH=$(dpkg --print-architecture)
 OUT=dist-out
 STAGE=$(mktemp -d)

@@ -1,16 +1,22 @@
 name: CI
 
+# Every push to main and every pull request. On main, the release job then
+# publishes the package if the workspace version in Cargo.toml isn't tagged yet.
+# Run it from the Actions tab to retry a failed release.
 on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: read
 
+# A new push to a pull request cancels its older run. Runs on main never
+# cancel, so a release is never stopped half way.
 concurrency:
   group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
   lint:
@@ -66,7 +72,8 @@ jobs:
           key: msrv-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
       - run: cargo check --workspace --all-targets --locked
 
-  # Build the .deb as a release would, and check it installs.
+  # Build the .deb and extension zip, and check the .deb installs. The release
+  # job publishes these exact files.
   package:
     runs-on: ubuntu-26.04
     steps:
@@ -92,3 +99,42 @@ jobs:
           name: packages
           path: dist-out/
           retention-days: 7
+
+  # Publish the package the job above built and tested. Only on main, and only
+  # when v<version> isn't tagged yet, so other changes to Cargo.toml don't release.
+  release:
+    needs: [lint, test, msrv, package]
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    runs-on: ubuntu-26.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Read the version
+        id: version
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          echo "tag=v$version" >> "$GITHUB_OUTPUT"
+          if git ls-remote --exit-code --tags origin "refs/tags/v$version" >/dev/null; then
+            echo "v$version is already released. Nothing to do."
+            echo "release=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "release=true" >> "$GITHUB_OUTPUT"
+          fi
+          # A version with a suffix, such as 0.3.0-rc.1, is a pre-release.
+          case "$version" in *-*) echo "prerelease=--prerelease" >> "$GITHUB_OUTPUT" ;; esac
+      - uses: actions/download-artifact@v4
+        if: steps.version.outputs.release == 'true'
+        with:
+          name: packages
+          path: dist-out/
+      - name: Tag and publish
+        if: steps.version.outputs.release == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.version.outputs.tag }}
+          PRERELEASE: ${{ steps.version.outputs.prerelease }}
+        # --target creates the tag on this commit.
+        run: |
+          gh release create "$TAG" dist-out/*.deb dist-out/*.zip \
+            --target "$GITHUB_SHA" --title "$TAG" --generate-notes $PRERELEASE

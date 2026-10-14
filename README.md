@@ -1,7 +1,6 @@
 # Predictive Battery Charging for Linux
 
 [![CI](https://github.com/hamishfor/predictive-battery-charging/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/hamishfor/predictive-battery-charging/actions/workflows/ci.yml)
-[![Release](https://github.com/hamishfor/predictive-battery-charging/actions/workflows/release.yml/badge.svg)](https://github.com/hamishfor/predictive-battery-charging/actions/workflows/release.yml)
 [![Latest release](https://img.shields.io/github/v/release/hamishfor/predictive-battery-charging?include_prereleases)](https://github.com/hamishfor/predictive-battery-charging/releases/latest)
 [![License: GPL v3+](https://img.shields.io/badge/license-GPL--3.0--or--later-blue)](LICENSE)
 

@@ -132,11 +132,10 @@ Service `org.pbc.Daemon1`, object `/org/pbc/Daemon1`, on the system bus.
 
 The `.deb` installs to `/usr`: `pbcd` and `pbcctl` in `/usr/bin`, the sleep hook in `/usr/libexec`, the unit in `/usr/lib/systemd/system`, and the extension system-wide in `/usr/share/gnome-shell/extensions`. `/etc/pbcd/config.toml` is a conffile, so upgrades keep local edits. Removing the package runs `pbcd --release` first, so the battery goes back to charging to 100%. Purging also deletes `/var/lib/pbcd`. `dist/install.sh` installs to `/usr/local` instead, and refuses to run while the package is installed.
 
-To release:
+To release, bump `[workspace.package] version` in the root `Cargo.toml`, run `cargo build` to update `Cargo.lock`, commit both, and merge to `main`.
 
-1. Set `version` in the root `Cargo.toml`, run `cargo build` to update `Cargo.lock`, and commit.
-2. Tag and push: `git tag v0.1.0 && git push origin v0.1.0`.
+The release is the last job of `.github/workflows/ci.yml`. On a push to `main`, once lint, tests, the Rust 1.89 build and the package job all pass, it checks whether `v<version>` is tagged. If not, it tags the commit and publishes a GitHub release with the `.deb` and zip that the package job built and test-installed. Otherwise it does nothing, so editing dependencies doesn't release. A version with a suffix, such as `0.3.0-rc.1`, is published as a pre-release and packaged as `0.3.0~rc.1`, which Debian sorts before `0.3.0`.
 
-`.github/workflows/release.yml` runs on the tag. It checks the tag matches `Cargo.toml`, runs the tests, builds the `.deb` and zip on Ubuntu 26.04, installs the `.deb` to check it, and attaches both files to a GitHub release.
+Don't create tags or releases by hand. A tag for the version stops the workflow from releasing it. To retry a failed release, fix it and push again, or run CI from the Actions tab.
 
 The extension's `version` in `extension/metadata.json` is separate. extensions.gnome.org sets it on upload.
