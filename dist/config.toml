@@ -61,7 +61,7 @@
 
 # db = "/var/lib/pbcd/pbcd.db"
 # sample_interval_s = 60
-# sample_retention_days = 1095
+# sample_retention_days = 1096
 
 # Unplugging for less than this many seconds doesn't end a session.
 # merge_gap_s = 300
