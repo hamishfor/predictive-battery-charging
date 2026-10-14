@@ -130,6 +130,32 @@ impl Config {
 mod tests {
     use super::*;
 
+    /// dist/config.toml, uncommented, parses and matches the defaults it claims to show.
+    #[test]
+    fn shipped_config_shows_the_defaults() {
+        let shipped = include_str!("../../../dist/config.toml");
+        let mut on = String::new();
+        for l in shipped.lines() {
+            let l = l.strip_prefix("# ").unwrap_or("");
+            let setting = l.split_once(" = ").is_some_and(|(k, _)| {
+                !k.is_empty() && k.chars().all(|c| c.is_ascii_lowercase() || c == '_')
+            });
+            // The [[schedule]] block is an example, not a default.
+            if setting && !l.starts_with("days") && !l.starts_with("full_by") {
+                on.push_str(l);
+                on.push('\n');
+            }
+        }
+        let c: Config = toml::from_str(&on).expect("dist/config.toml settings parse");
+        let d = Config::default();
+        assert_eq!(
+            format!("{c:?}"),
+            format!("{d:?}"),
+            "dist/config.toml shows values that aren't the defaults"
+        );
+        assert!(on.lines().count() >= 15, "found only:\n{on}");
+    }
+
     #[test]
     fn empty_is_default() {
         let c: Config = toml::from_str("").unwrap();

@@ -91,7 +91,7 @@ If your laptop fails a step in the guided test, the scripts in `spike/` check ea
 
 - **The battery won't charge past a certain level:** run `pbcctl charge-now` to charge to full this time. To turn limits off altogether, run `sudo systemctl stop pbcd`, then `sudo pbcctl full` to set normal charging (0/100) on every battery.
 - **The laptop won't stay asleep:** set `quiet_wake = "off"` in `/etc/pbcd/config.toml`, then run `sudo systemctl restart pbcd`.
-- **The quiet-wake test says "the test wake didn't finish":** the lines after it say what stopped the wake and what to try. The most common case is a charger that reports a wake every time. The test prints a `quiet_wake_ignore` line to add to the config. The hook's full log is in `sudo journalctl -k -b | grep pbcd-sleep-hook`.
+- **The quiet-wake test says "the test wake didn't finish":** The most common case is a charger that reports a wake every time. The test offers to allow it and run a second test wake. If that wake is clean and you confirm the laptop stayed dark and silent, pbcd saves the setting. You can reset this with `sudo pbcctl selftest --reset`. If the laptop did wake, you may decline, and pbcctl will set `quiet_wake_ignore`.
 - **A result looks wrong:** `sudo pbcctl selftest --reset` clears confirmed results. To clear everything, including what it observed, uninstall with `--purge` and reinstall.
 
 ## Developers

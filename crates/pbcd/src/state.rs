@@ -70,6 +70,8 @@ pub struct Status {
     pub capabilities: Vec<pbc_model::selfcheck::Record>,
     /// Charger wakeup sources the quiet wake tolerates (`quiet_wake_ignore`, and the profile's).
     pub quiet_wake_ignore: Vec<String>,
+    /// The part of `quiet_wake_ignore` that `pbcctl selftest` confirmed and saved.
+    pub selftest_wake_ignore: Vec<String>,
     /// The charge limit right now: 100, or a hold level between 70 and 99.
     pub charge_to: Option<u8>,
     /// Where the current prediction's deadline came from: "learned", or "schedule" when
@@ -453,6 +455,7 @@ impl Core {
             batteries: Vec::new(),
             capabilities: self.store.capabilities().unwrap_or_default(),
             quiet_wake_ignore: Vec::new(),
+            selftest_wake_ignore: Vec::new(),
             charge_to: self.last_decision.as_ref().map(|d| d.target.end),
             prediction_source,
             learned_predictor: if self.backtest.as_ref().is_some_and(|b| b.use_model)
