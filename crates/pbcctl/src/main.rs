@@ -293,6 +293,7 @@ fn main() -> Result<()> {
             } else {
                 selftest::run(
                     &cli.sysfs,
+                    &profiles(&cli)?,
                     selftest::Opts {
                         user_bus: *user,
                         only: only.clone(),

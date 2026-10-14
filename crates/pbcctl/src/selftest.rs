@@ -87,14 +87,13 @@ impl Ctx {
     }
 }
 
-pub fn run(sysfs: &std::path::Path, opts: Opts) -> Result<()> {
+pub fn run(sysfs: &std::path::Path, profiles: &[Profile], opts: Opts) -> Result<()> {
     if !is_root() {
         bail!("run with sudo: the self-test changes the charge limits");
     }
     let root = SysRoot::new(sysfs);
     let dmi = DmiInfo::read(&root);
-    let profiles = Profile::builtin();
-    let Some(p) = Profile::detect(&profiles, &dmi, &root) else {
+    let Some(p) = Profile::detect(profiles, &dmi, &root) else {
         bail!("no hardware profile matches this laptop. See docs/DEVICE_SUPPORT.md to add one");
     };
     let bats: Vec<Battery> = Battery::discover(&root)?
