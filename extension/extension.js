@@ -27,8 +27,10 @@ class PredictiveChargingToggle extends QuickMenuToggle {
             title: 'Battery Charging',
             iconName: 'battery-level-80-charging-symbolic',
             toggleMode: false,
-            menuButtonAccessibleName: 'Open Predictive Battery Charging menu',
         });
+        // GNOME 48's QuickMenuToggle has no menuButtonAccessibleName, and passing it to _init throws.
+        if ('menuButtonAccessibleName' in this)
+            this.menuButtonAccessibleName = 'Open Predictive Battery Charging menu';
         this._ext = ext;
         this._view = null;
 
