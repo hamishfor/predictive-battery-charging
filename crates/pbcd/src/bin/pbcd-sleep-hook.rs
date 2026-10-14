@@ -76,18 +76,37 @@ fn snapshot() -> HashMap<String, u64> {
     m
 }
 
-fn changed(before: &HashMap<String, u64>, after: &HashMap<String, u64>) -> Vec<String> {
-    let mut v: Vec<String> = after
+/// Wakeup sources whose event count went up, as (is_rtc, "name(+n)").
+fn changed(before: &HashMap<String, u64>, after: &HashMap<String, u64>) -> Vec<(bool, String)> {
+    let rtc_dirs = rtc_wakeup_dirs();
+    let mut v: Vec<(bool, String)> = after
         .iter()
         .filter(|(k, c)| before.get(*k).is_some_and(|b| b != *c))
-        .map(|(k, c)| format!("{}(+{})", k.split('|').nth(1).unwrap_or(k), c - before[k]))
+        .map(|(k, c)| {
+            let (dir, name) = k.split_once('|').unwrap_or(("", k));
+            let rtc = rtc_dirs.iter().any(|d| d == dir)
+                || name == "rtc_cmos"
+                || name.starts_with("alarmtimer");
+            (rtc, format!("{name}(+{})", c - before[k]))
+        })
         .collect();
-    v.sort();
+    v.sort_by(|a, b| a.1.cmp(&b.1));
     v
 }
 
-fn is_rtc(s: &str) -> bool {
-    s.starts_with("rtc_cmos(") || s.starts_with("alarmtimer")
+/// The wakeup sources that belong to rtc0's device. Their name is the device's,
+/// which isn't always "rtc_cmos"
+fn rtc_wakeup_dirs() -> Vec<String> {
+    let Ok(rtc) = fs::canonicalize(sys("/sys/class/rtc/rtc0/device")) else {
+        return Vec::new();
+    };
+    let Ok(rd) = fs::read_dir(sys("/sys/class/wakeup")) else {
+        return Vec::new();
+    };
+    rd.flatten()
+        .filter(|e| fs::canonicalize(e.path().join("device")).is_ok_and(|d| d == rtc))
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .collect()
 }
 
 fn lid_closed() -> bool {
@@ -234,7 +253,7 @@ fn main() {
         let t_resume = Instant::now();
         let after = snapshot();
         let ch = changed(&base, &after);
-        let others: Vec<&String> = ch.iter().filter(|s| !is_rtc(s)).collect();
+        let others: Vec<&String> = ch.iter().filter(|(rtc, _)| !rtc).map(|(_, s)| s).collect();
         let t = now();
         h.log(
             "post",
@@ -243,7 +262,10 @@ fn main() {
                 lid_closed(),
                 user_slice_frozen(),
                 ac_online(),
-                ch.join(" "),
+                ch.iter()
+                    .map(|(_, s)| s.as_str())
+                    .collect::<Vec<_>>()
+                    .join(" "),
                 t - plan.wake_at
             ),
         );
@@ -255,7 +277,7 @@ fn main() {
         if t < plan.wake_at - EARLY_S || t > plan.wake_at + LATE_S {
             h.normal("not at scheduled time");
         }
-        if !ch.iter().any(|s| is_rtc(s)) {
+        if !ch.iter().any(|(rtc, _)| *rtc) {
             h.normal("rtc did not fire");
         }
         if !others.is_empty() {

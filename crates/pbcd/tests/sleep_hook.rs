@@ -123,12 +123,26 @@ impl Fake {
     }
 
     fn bump(&self, source: &str) {
-        for i in 0..4 {
-            let d = self.root().join(format!("sys/class/wakeup/wakeup{i}"));
+        for e in fs::read_dir(self.root().join("sys/class/wakeup")).unwrap() {
+            let d = e.unwrap().path();
             if fs::read_to_string(d.join("name")).unwrap() == source {
                 fs::write(d.join("event_count"), "11").unwrap();
             }
         }
+    }
+
+    /// Make rtc0's device the PNP device "00:04", with a wakeup source of that
+    /// name.
+    fn add_pnp_rtc(&self) {
+        let r = self.root();
+        let dev = r.join("sys/devices/pnp0/00:04");
+        fs::create_dir_all(&dev).unwrap();
+        std::os::unix::fs::symlink(&dev, r.join("sys/class/rtc/rtc0/device")).unwrap();
+        let w = r.join("sys/class/wakeup/wakeup9");
+        fs::create_dir_all(&w).unwrap();
+        fs::write(w.join("name"), "00:04").unwrap();
+        fs::write(w.join("event_count"), "10").unwrap();
+        std::os::unix::fs::symlink(&dev, w.join("device")).unwrap();
     }
 
     fn run_kind(&self, phase: &str, kind: &str) -> (String, Duration) {
@@ -251,6 +265,18 @@ fn rtc_not_fired_is_normal_resume() {
     f.run("pre");
     let (log, _) = f.run("post");
     assert!(log.contains("rtc did not fire"), "{log}");
+}
+
+#[test]
+fn rtc_named_after_its_pnp_device_is_ours() {
+    let f = Fake::new("closed", true);
+    f.add_pnp_rtc();
+    f.plan(now());
+    f.run("pre");
+    f.bump("00:04");
+    let (log, _) = f.run("post");
+    assert!(log.contains("wrote: 0/100"), "{log}");
+    assert!(log.contains("resuspend"), "{log}");
 }
 
 #[test]
