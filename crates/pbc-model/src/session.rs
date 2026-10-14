@@ -46,6 +46,25 @@ impl PowerEvent {
             | Self::Start { ts, .. } => *ts,
         }
     }
+
+    /// AC state and capacity, for events that report AC (all but Suspend).
+    pub fn online_capacity(&self) -> Option<(bool, Option<u8>)> {
+        match *self {
+            Self::Ac {
+                online, capacity, ..
+            }
+            | Self::Resume {
+                online, capacity, ..
+            }
+            | Self::Stop {
+                online, capacity, ..
+            }
+            | Self::Start {
+                online, capacity, ..
+            } => Some((online, capacity)),
+            Self::Suspend { .. } => None,
+        }
+    }
 }
 
 /// When something happened. Usually known exactly. If it happened while we
@@ -227,25 +246,14 @@ impl SessionBuilder {
             PowerEvent::Suspend { ts, capacity } => {
                 self.note_capacity(capacity);
                 let online = self.awake_online().unwrap_or(self.open.is_some());
-                self.watch = Watch::Blind {
-                    since: ts,
-                    online,
-                    capacity: capacity.or(self.last_capacity),
-                };
+                self.blind(ts, online, capacity);
             }
             PowerEvent::Resume {
                 ts,
                 online,
                 capacity,
             } => {
-                let when = match self.watch {
-                    Watch::Blind { since, .. } => When::between(since, ts),
-                    _ => When::exact(ts),
-                };
-                self.hidden_charge(ts, online, capacity, &mut out);
-                self.observe(when, online, capacity, &mut out);
-                self.note_capacity(capacity);
-                self.watch = Watch::Awake { online };
+                self.wake(ts, online, capacity, &mut out);
             }
             PowerEvent::Stop {
                 ts,
@@ -254,11 +262,7 @@ impl SessionBuilder {
             } => {
                 self.note_capacity(capacity);
                 self.observe(When::exact(ts), online, capacity, &mut out);
-                self.watch = Watch::Blind {
-                    since: ts,
-                    online,
-                    capacity: capacity.or(self.last_capacity),
-                };
+                self.blind(ts, online, capacity);
             }
             PowerEvent::Start {
                 ts,
@@ -278,14 +282,7 @@ impl SessionBuilder {
                         capacity: self.last_capacity,
                     };
                 }
-                let when = match self.watch {
-                    Watch::Blind { since, .. } => When::between(since, ts),
-                    _ => When::exact(ts),
-                };
-                self.hidden_charge(ts, online, capacity, &mut out);
-                self.observe(when, online, capacity, &mut out);
-                self.note_capacity(capacity);
-                self.watch = Watch::Awake { online };
+                self.wake(ts, online, capacity, &mut out);
             }
         }
         Ok(out)
@@ -318,6 +315,26 @@ impl SessionBuilder {
             });
         }
         out
+    }
+
+    fn blind(&mut self, since: Ts, online: bool, capacity: Option<u8>) {
+        self.watch = Watch::Blind {
+            since,
+            online,
+            capacity: capacity.or(self.last_capacity),
+        };
+    }
+
+    /// Back from Blind (resume, restart): the transition happened somewhere in the gap.
+    fn wake(&mut self, ts: Ts, online: bool, capacity: Option<u8>, out: &mut Vec<Session>) {
+        let when = match self.watch {
+            Watch::Blind { since, .. } => When::between(since, ts),
+            _ => When::exact(ts),
+        };
+        self.hidden_charge(ts, online, capacity, out);
+        self.observe(when, online, capacity, out);
+        self.note_capacity(capacity);
+        self.watch = Watch::Awake { online };
     }
 
     fn awake_online(&self) -> Option<bool> {

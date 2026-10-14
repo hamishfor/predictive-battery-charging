@@ -10,6 +10,9 @@ use pbc_model::Ts;
 use pbc_store::{Sample, Store};
 use serde::Serialize;
 
+/// History the predictors see (matches `max_age_days`).
+const HISTORY_S: Ts = 180 * 86400;
+
 pub const KV_LAST_SEEN: &str = "last_seen";
 pub const KV_CONTROL: &str = "control_state";
 pub const KV_OVERRIDE: &str = "override";
@@ -113,44 +116,19 @@ impl Core {
         for ev in store.events_since(since)? {
             // These sessions are already stored (or will be re-derived), so drop them.
             let _ = builder.push(&ev);
-            if let PowerEvent::Ac {
-                online, capacity, ..
-            }
-            | PowerEvent::Resume {
-                online, capacity, ..
-            }
-            | PowerEvent::Stop {
-                online, capacity, ..
-            }
-            | PowerEvent::Start {
-                online, capacity, ..
-            } = ev
-            {
+            if let Some((online, capacity)) = ev.online_capacity() {
                 last_online = Some(online);
                 if capacity.is_some() {
                     last_capacity = capacity;
                 }
             }
         }
-        let control = store
-            .get(KV_CONTROL)?
-            .and_then(|v| serde_json::from_str(&v).ok())
-            .unwrap_or(State::Unplugged);
+        let control = load_json(&store, KV_CONTROL)?.unwrap_or(State::Unplugged);
         let override_requested = store.get(KV_OVERRIDE)?.as_deref() == Some("1");
-        let charge = store
-            .get(KV_CHARGE_MODEL)?
-            .and_then(|v| serde_json::from_str(&v).ok())
-            .unwrap_or_default();
-        let hazard = store
-            .get(KV_HAZARD_MODEL)?
-            .and_then(|v| serde_json::from_str(&v).ok());
-        let backtest = store
-            .get(KV_BACKTEST)?
-            .and_then(|v| serde_json::from_str(&v).ok());
-        let accuracy = store
-            .get(KV_ACCURACY)?
-            .and_then(|v| serde_json::from_str(&v).ok())
-            .unwrap_or_default();
+        let charge = load_json(&store, KV_CHARGE_MODEL)?.unwrap_or_default();
+        let hazard = load_json(&store, KV_HAZARD_MODEL)?;
+        let backtest = load_json(&store, KV_BACKTEST)?;
+        let accuracy = load_json(&store, KV_ACCURACY)?.unwrap_or_default();
         Ok(Self {
             store,
             builder,
@@ -188,12 +166,10 @@ impl Core {
                 self.set_override(false)?;
             }
         }
-        // On battery, predict as if the charger went in now. That's the limit an
-        // unseen plug-in (during sleep) starts at.
         let pred = if self.online() {
             self.predict(now)?
         } else {
-            self.predict_from(now, Some(pbc_model::session::When::exact(now)))?
+            self.predict_if_plugged_now(now)?
         };
         let input = Input {
             now,
@@ -262,7 +238,7 @@ impl Core {
     /// Retrain the unplug model and compare it with `Routine` on this laptop's
     /// history. The model is used only if it wins. Returns the backtest.
     pub fn retrain(&mut self, now: Ts) -> Result<Option<pbc_model::hazard::Backtest>> {
-        let history = self.store.sessions_since(now - 180 * 86400)?;
+        let history = self.store.sessions_since(now - HISTORY_S)?;
         let cfg = pbc_model::hazard::HazardConfig::default();
         let Some(model) = pbc_model::hazard::train(&history, now, &self.tz, &cfg) else {
             return Ok(None);
@@ -318,19 +294,7 @@ impl Core {
         for s in &done {
             self.store.insert_session(s)?;
         }
-        if let PowerEvent::Ac {
-            online, capacity, ..
-        }
-        | PowerEvent::Resume {
-            online, capacity, ..
-        }
-        | PowerEvent::Stop {
-            online, capacity, ..
-        }
-        | PowerEvent::Start {
-            online, capacity, ..
-        } = ev
-        {
+        if let Some((online, capacity)) = ev.online_capacity() {
             self.last_online = Some(online);
             if capacity.is_some() {
                 self.last_capacity = capacity;
@@ -375,7 +339,7 @@ impl Core {
         now: Ts,
         plugged_since: Option<pbc_model::session::When>,
     ) -> Result<Option<Prediction>> {
-        let history = self.store.sessions_since(now - 180 * 86400)?;
+        let history = self.store.sessions_since(now - HISTORY_S)?;
         let q = Query {
             now,
             plugged_since,
@@ -385,7 +349,6 @@ impl Core {
         };
         let factor = self.accuracy.factor();
         let routine = pbc_model::learned::Routine::new(self.routine, factor);
-        let use_model = self.backtest.as_ref().is_some_and(|b| b.use_model);
         let with = |learned: &dyn Predictor| {
             WithSchedule {
                 learned,
@@ -393,18 +356,24 @@ impl Core {
             }
             .predict(&q)
         };
-        let p = match (&self.hazard, use_model) {
-            (Some(m), true) => {
-                let hz = pbc_model::hazard::Hazard {
-                    model: m,
-                    cfg: Default::default(),
-                    accuracy_factor: factor,
-                };
+        let p = match self.hazard.as_ref().filter(|_| self.uses_model()) {
+            Some(m) => {
+                let hz = pbc_model::hazard::Hazard::new(m, Default::default(), factor);
                 with(&pbc_model::learned::Chain(vec![&hz, &routine]))
             }
-            _ => with(&routine),
+            None => with(&routine),
         };
         Ok(p)
+    }
+
+    /// As if the charger went in now: the limit an unseen plug-in starts at.
+    fn predict_if_plugged_now(&self, now: Ts) -> Result<Option<Prediction>> {
+        self.predict_from(now, Some(pbc_model::session::When::exact(now)))
+    }
+
+    /// The backtest picked the hazard model over `Routine`.
+    fn uses_model(&self) -> bool {
+        self.hazard.is_some() && self.backtest.as_ref().is_some_and(|b| b.use_model)
     }
 
     /// While on battery: when a top-off would have to start for the next confident
@@ -414,8 +383,7 @@ impl Core {
         if self.online() {
             return Ok(None);
         }
-        // "If the charger went in now, when would this session end?"
-        let Some(p) = self.predict_from(now, Some(pbc_model::session::When::exact(now)))? else {
+        let Some(p) = self.predict_if_plugged_now(now)? else {
             return Ok(None);
         };
         if p.confidence < self.policy.min_confidence || p.full_by <= now {
@@ -450,9 +418,7 @@ impl Core {
             capabilities: self.store.capabilities().unwrap_or_default(),
             charge_to: self.last_decision.as_ref().map(|d| d.target.end),
             prediction_source,
-            learned_predictor: if self.backtest.as_ref().is_some_and(|b| b.use_model)
-                && self.hazard.is_some()
-            {
+            learned_predictor: if self.uses_model() {
                 "model"
             } else {
                 "routine"
@@ -476,6 +442,10 @@ impl Core {
         self.builder = b;
         Ok(out.len())
     }
+}
+
+fn load_json<T: serde::de::DeserializeOwned>(store: &Store, key: &str) -> Result<Option<T>> {
+    Ok(store.get(key)?.and_then(|v| serde_json::from_str(&v).ok()))
 }
 
 #[cfg(test)]
