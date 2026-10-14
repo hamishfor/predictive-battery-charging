@@ -76,8 +76,6 @@ pub struct Status {
     /// Which learned predictor is in use, "model" or "routine", and the last comparison.
     pub learned_predictor: &'static str,
     pub backtest: Option<pbc_model::hazard::Backtest>,
-    /// Learned minutes per 5% band, as (lower percent, minutes). Bands still on the prior are left out.
-    pub charge_curve_min: Vec<(u8, f64)>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -278,7 +276,7 @@ impl Core {
         Ok(Some(b))
     }
 
-    /// Refine the charge model from the last 30 days of samples.
+    /// Refine the charge model from the last 90 days of samples.
     pub fn learn_charge(&mut self, now: Ts) -> Result<usize> {
         // Rebuild from the default prior over all retained samples, rather than
         // refining the stored model. A learning fix then flushes old values, and
@@ -460,7 +458,6 @@ impl Core {
                 "routine"
             },
             backtest: self.backtest.clone(),
-            charge_curve_min: self.charge.learned_bands(5),
         })
     }
 

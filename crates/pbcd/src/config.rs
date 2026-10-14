@@ -92,7 +92,7 @@ impl Default for Config {
             db: "/var/lib/pbcd/pbcd.db".into(),
             profiles_dir: None,
             sample_interval_s: 60,
-            sample_retention_days: 180,
+            sample_retention_days: 1096,
             merge_gap_s: 300,
             sysfs: "/sys".into(),
             mode: Mode::Control,

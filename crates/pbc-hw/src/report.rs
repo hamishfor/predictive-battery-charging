@@ -6,8 +6,9 @@
 //! builtin profiles, so a report doubles as a device-support test.
 //!
 //! A report holds model facts only: DMI identity, software versions, the
-//! charge-control files, battery health, self-check results and the learned
-//! charge curve. No serial numbers, host names, usage history or battery wear.
+//! charge-control files, battery design capacity and self-check results. No
+//! serial numbers, host names, usage history, battery wear or charge times,
+//! which describe one battery at one age rather than the model.
 
 use crate::sysfs::SysRoot;
 use crate::{Battery, DmiInfo, Profile};
@@ -63,9 +64,6 @@ pub struct Report {
     /// Self-check results, keyed by capability (`enforce`, `resume`, `persist`, `quiet_wake`).
     #[serde(default)]
     pub checks: BTreeMap<String, Check>,
-    /// Learned minutes per 5% band, such as `80-85: 5.5`. Only bands this machine has learned.
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub charge_curve_min: BTreeMap<String, f64>,
     /// Free text: firmware quirks, what was seen or heard during the wake test.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub notes: String,
@@ -130,7 +128,7 @@ impl ModelFile {
     }
 
     /// Add a report. A report from the same machine type and BIOS replaces the
-    /// old one, but a check the new run left untested, the curve and the notes
+    /// old one, but a check the new run left untested and the notes
     /// keep the old value, so a quick re-run never discards a result.
     pub fn merge(&mut self, mut new: Report, profile: Option<String>) {
         self.profile = profile;
@@ -144,9 +142,6 @@ impl ModelFile {
                     if new.checks.get(k).is_none_or(|n| *n == Check::Untested) {
                         new.checks.insert(k.clone(), *c);
                     }
-                }
-                if new.charge_curve_min.is_empty() {
-                    new.charge_curve_min = std::mem::take(&mut old.charge_curve_min);
                 }
                 if new.notes.is_empty() {
                     new.notes = std::mem::take(&mut old.notes);
@@ -179,7 +174,7 @@ impl ModelFile {
 }
 
 /// The parts of a report that come from sysfs. The caller adds the date,
-/// software versions, self-checks and charge curve.
+/// software versions and self-checks.
 pub fn collect(root: &SysRoot, profiles: &[Profile]) -> (ModelFile, Report) {
     let dmi = DmiInfo::read(root);
     let family = root
@@ -262,7 +257,6 @@ pub fn collect(root: &SysRoot, profiles: &[Profile]) -> (ModelFile, Report) {
         batteries,
         other_supplies,
         checks: BTreeMap::new(),
-        charge_curve_min: BTreeMap::new(),
         notes: String::new(),
     };
     (file, report)
@@ -338,7 +332,6 @@ mod tests {
             batteries: BTreeMap::new(),
             other_supplies: BTreeMap::new(),
             checks: checks.iter().map(|(k, c)| (k.to_string(), *c)).collect(),
-            charge_curve_min: BTreeMap::new(),
             notes: String::new(),
         }
     }

@@ -521,12 +521,6 @@ fn report(cli: &Cli, user_bus: bool, write: Option<&std::path::Path>) -> Result<
                 };
                 r.checks.insert(c.capability.key().into(), check);
             }
-            for b in st["charge_curve_min"].as_array().into_iter().flatten() {
-                if let (Some(lo), Some(m)) = (b[0].as_u64(), b[1].as_f64()) {
-                    r.charge_curve_min
-                        .insert(format!("{lo}-{}", (lo + 5).min(100)), m);
-                }
-            }
         }
         Err(e) => eprintln!("pbcd not reachable, so the report has no self-checks: {e:#}"),
     }
