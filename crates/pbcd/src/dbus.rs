@@ -5,7 +5,7 @@
 //! allowed without a password, matching UPower's charge-limit toggle.
 
 use crate::config::Mode;
-use crate::Ctl;
+use crate::{now, Ctl};
 use std::collections::HashMap;
 use std::sync::Arc;
 use zbus::message::Header;
@@ -21,10 +21,6 @@ pub struct Api {
     pub ctl: Arc<Ctl>,
     /// False on the session bus (development), where polkit doesn't apply.
     pub polkit: bool,
-}
-
-fn now() -> i64 {
-    jiff::Timestamp::now().as_second()
 }
 
 fn failed(e: impl std::fmt::Display) -> zbus::fdo::Error {

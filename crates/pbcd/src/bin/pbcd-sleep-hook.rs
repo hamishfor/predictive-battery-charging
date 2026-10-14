@@ -23,8 +23,7 @@
 //! RTC wake is accepted while AC is online, and the settle window is then
 //! doubled, so a lid opening behind it still shows before re-suspend.
 
-#[path = "../wakeplan.rs"]
-mod wakeplan;
+use pbc_hw::wakeplan;
 
 use std::collections::HashMap;
 use std::fs;
@@ -120,11 +119,11 @@ fn changed(before: &HashMap<String, u64>, after: &HashMap<String, u64>) -> Vec<(
 /// Is `name` a Mains or USB power supply? Read from its `type`, so a keyboard,
 /// lid or power button can never count as one, whatever it's called.
 fn is_charger(name: &str) -> bool {
-    !name.contains('/')
-        && matches!(
-            read(sys("/sys/class/power_supply").join(name).join("type")).as_deref(),
-            Some("Mains") | Some("USB")
-        )
+    !name.contains('/') && is_charger_dir(&sys("/sys/class/power_supply").join(name))
+}
+
+fn is_charger_dir(dir: &Path) -> bool {
+    matches!(read(dir.join("type")).as_deref(), Some("Mains" | "USB"))
 }
 
 fn labels(ch: &[(Source, String)], kind: Source) -> String {
@@ -166,8 +165,7 @@ fn ac_online() -> bool {
     };
     rd.flatten().any(|e| {
         let p = e.path();
-        matches!(read(p.join("type")).as_deref(), Some("Mains") | Some("USB"))
-            && read(p.join("online")).as_deref() == Some("1")
+        is_charger_dir(&p) && read(p.join("online")).as_deref() == Some("1")
     })
 }
 

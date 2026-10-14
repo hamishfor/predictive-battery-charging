@@ -6,7 +6,9 @@
 
 use crate::bus;
 use anyhow::{bail, Context, Result};
+use pbc_hw::sysfs::PSY;
 use pbc_hw::thresholds::{apply, Thresholds};
+use pbc_hw::wakeplan;
 use pbc_hw::{Battery, BatteryStatus, DmiInfo, Profile, SysRoot};
 use std::io::{BufRead, Write};
 use std::time::{Duration, Instant};
@@ -224,23 +226,26 @@ fn quiet_wake(cx: &Ctx) -> Result<()> {
 
 /// Arm one test wake, wait for the user, and return the hook's decisions.
 fn test_wake(cx: &Ctx) -> Result<Vec<(String, String)>> {
-    let dir = std::path::Path::new(RUNTIME_DIR);
+    let dir = std::path::Path::new(wakeplan::DIR);
     let wake_at = now() + 120;
-    let log = dir.join("wake-log.jsonl");
-    let _ = std::fs::remove_file(&log);
-    let _ = std::fs::remove_file(dir.join("wake-done"));
+    let _ = std::fs::remove_file(wakeplan::log_path(dir));
     // Hold now. The wake should raise the limit to 0/100.
     cx.set_all(Thresholds { start: 75, end: 80 })?;
-    let plan = serde_json::json!({
-        "wake_at": wake_at,
-        "start": 0,
-        "end": 100,
-        "batteries": cx.bats.iter().map(|b| cx.root.path(format!("class/power_supply/{}", b.name))).collect::<Vec<_>>(),
-        "min_gap": cx.rules.min_gap,
-        "selftest": true,
-    });
-    std::fs::create_dir_all(dir)?;
-    std::fs::write(dir.join("wake-plan.json"), plan.to_string())?;
+    wakeplan::write(
+        dir,
+        &wakeplan::Plan {
+            wake_at,
+            start: 0,
+            end: 100,
+            batteries: cx
+                .bats
+                .iter()
+                .map(|b| cx.root.path(format!("{PSY}/{}", b.name)))
+                .collect(),
+            min_gap: cx.rules.min_gap,
+            selftest: true,
+        },
+    )?;
     let at = jiff::Timestamp::from_second(wake_at)
         .map(|t| {
             t.to_zoned(jiff::tz::TimeZone::system())
@@ -254,25 +259,14 @@ fn test_wake(cx: &Ctx) -> Result<Vec<(String, String)>> {
     );
     pause("  Then open the lid and come back here.")?;
 
-    let lines = std::fs::read_to_string(&log).unwrap_or_default();
-    let decisions = lines
-        .lines()
-        .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
-        .map(|v| {
-            (
-                v["decision"].as_str().unwrap_or("").to_string(),
-                v["detail"].as_str().unwrap_or("").to_string(),
-            )
-        })
-        .collect();
     // pbcd left the plan and log for us. Clear them now we've read them.
-    for f in ["wake-plan.json", "wake-done", "wake-log.jsonl"] {
-        let _ = std::fs::remove_file(dir.join(f));
-    }
+    let decisions = wakeplan::take_log(dir)
+        .into_iter()
+        .map(|l| (l.decision, l.detail))
+        .collect();
+    wakeplan::clear(dir);
     Ok(decisions)
 }
-
-const RUNTIME_DIR: &str = "/run/pbcd";
 
 fn now() -> i64 {
     jiff::Timestamp::now().as_second()

@@ -5,12 +5,13 @@ mod hw;
 mod selfcheck;
 mod state;
 mod upower;
-mod wakeplan;
 
 use anyhow::{Context, Result};
 use clap::Parser;
 use config::{Mode, QuietWake, ShutdownValue};
 use futures_util::StreamExt;
+use pbc_hw::sysfs::PSY;
+use pbc_hw::wakeplan;
 use pbc_hw::SysRoot;
 use pbc_model::control::{plan_sleep, SleepAction, Target};
 use pbc_model::predict::Schedule;
@@ -47,7 +48,7 @@ struct Args {
     session_upower: bool,
 }
 
-fn now() -> i64 {
+pub(crate) fn now() -> i64 {
     jiff::Timestamp::now().as_second()
 }
 
@@ -352,11 +353,7 @@ async fn main() -> Result<()> {
         capacity: hw.capacity(),
         last_seen,
     })?;
-    // Pick up the result of the last maintenance wake, if any.
-    if !wakeplan::recent_selftest(&cfg.runtime_dir, now()) {
-        judge_wake_log(&core.store, &cfg.runtime_dir);
-        wakeplan::clear(&cfg.runtime_dir);
-    }
+    absorb_wake_log(&core.store, &cfg.runtime_dir);
     tracing::info!(
         db = %cfg.db.display(),
         sessions = core.store.session_count()?,
@@ -514,11 +511,7 @@ async fn main() -> Result<()> {
                     inhibitor = None; // release so the system can sleep
                 } else {
                     ctl.core.lock().await.event(PowerEvent::Resume { ts: now(), online: hw.online(), capacity: hw.capacity() })?;
-                    // pbcctl selftest reads its own wake's log, then clears up.
-                    if !wakeplan::recent_selftest(&cfg.runtime_dir, now()) {
-                        judge_wake_log(&ctl.core.lock().await.store, &cfg.runtime_dir);
-                        wakeplan::clear(&cfg.runtime_dir);
-                    }
+                    absorb_wake_log(&ctl.core.lock().await.store, &cfg.runtime_dir);
                     tracing::info!(online = hw.online(), "resumed");
                     if let Some(l) = &login { inhibitor = inhibit(l).await; }
                     ctl.step().await?;
@@ -581,6 +574,10 @@ async fn before_sleep(ctl: &Ctl, cfg: &config::Config, quiet_wake: bool, hw: &hw
             }
         }
         SleepAction::Wake { at } => {
+            if wakeplan::pending_selftest(&cfg.runtime_dir, now()) {
+                tracing::info!("selftest wake pending: leaving its plan in place");
+                return;
+            }
             let full = a.thresholds_for(Target::FULL);
             let gap = hw
                 .profile
@@ -590,12 +587,8 @@ async fn before_sleep(ctl: &Ctl, cfg: &config::Config, quiet_wake: bool, hw: &hw
             let batteries: Vec<std::path::PathBuf> = a
                 .batteries()
                 .iter()
-                .map(|b| hw.root.path(format!("class/power_supply/{}", b.name)))
+                .map(|b| hw.root.path(format!("{PSY}/{}", b.name)))
                 .collect();
-            if wakeplan::pending_selftest(&cfg.runtime_dir, now()) {
-                tracing::info!("selftest wake pending: leaving its plan in place");
-                return;
-            }
             let plan = wakeplan::Plan {
                 wake_at: at,
                 start: full.start,
@@ -636,6 +629,15 @@ async fn before_shutdown(ctl: &Ctl, v: ShutdownValue) {
             }
             Err(e) => tracing::error!("shutdown thresholds: {e:#}"),
         }
+    }
+}
+
+/// Judge the last maintenance wake and clear its plan. A recent selftest's log is
+/// left for `pbcctl selftest`.
+fn absorb_wake_log(store: &Store, dir: &std::path::Path) {
+    if !wakeplan::recent_selftest(dir, now()) {
+        judge_wake_log(store, dir);
+        wakeplan::clear(dir);
     }
 }
 

@@ -8,6 +8,7 @@ pub mod profile;
 pub mod report;
 pub mod sysfs;
 pub mod thresholds;
+pub mod wakeplan;
 
 pub use battery::{combine, AcState, Battery, BatteryStatus, PowerSnapshot};
 pub use profile::{DmiInfo, Profile};

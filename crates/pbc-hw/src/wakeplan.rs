@@ -1,5 +1,4 @@
-#![allow(dead_code)] // shared with pbcd; the hook uses only part of it
-//! The maintenance plan shared between `pbcd` and `pbcd-sleep-hook`.
+//! Wake plan handed from pbcd (and `pbcctl selftest`) to `pbcd-sleep-hook`.
 //!
 //! pbcd writes it before sleep, inside its logind delay inhibitor. The hook
 //! reads it during systemd-sleep's post phase. It's a small JSON file in
