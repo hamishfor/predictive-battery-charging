@@ -12,11 +12,8 @@ import * as PopupMenu from 'resource:///org/gnome/shell/ui/popupMenu.js';
 import * as Util from 'resource:///org/gnome/shell/misc/util.js';
 import {QuickMenuToggle, SystemIndicator} from 'resource:///org/gnome/shell/ui/quickSettings.js';
 
-import {present} from './status.js';
+import {BUS_NAME, IFACE, OBJECT_PATH, present} from './status.js';
 
-const BUS_NAME = 'org.pbc.Daemon1';
-const OBJECT_PATH = '/org/pbc/Daemon1';
-const IFACE = 'org.pbc.Daemon1';
 // Fallback poll in case a Changed signal is missed.
 const REFRESH_S = 120;
 

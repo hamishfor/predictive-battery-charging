@@ -9,6 +9,12 @@
  * @param {Date} now
  * @returns {string}
  */
+export const BUS_NAME = 'org.pbc.Daemon1';
+export const OBJECT_PATH = '/org/pbc/Daemon1';
+export const IFACE = 'org.pbc.Daemon1';
+
+const charges = n => `${n} charge${n === 1 ? '' : 's'}`;
+
 export function shortTime(ts, now = new Date()) {
     const d = new Date(ts * 1000);
     const hm = d.toLocaleTimeString([], {hour: '2-digit', minute: '2-digit'});
@@ -83,7 +89,7 @@ export function present(st, now = new Date()) {
     if (!control) {
         subtitle = 'Learning your routine';
         icon = 'battery-good-symbolic';
-        detail.push(`Collect mode · ${st.sessions} charge${st.sessions === 1 ? '' : 's'} recorded`);
+        detail.push(`Collect mode · ${charges(st.sessions)} recorded`);
     } else if (paused && gnomeSwitch) {
         subtitle = 'Off';
         headline = withCap('Off · charging to 100%');
@@ -117,7 +123,7 @@ export function present(st, now = new Date()) {
         case 'normal':
             subtitle = withCap('Charging to 100%');
             if (learning)
-                detail.push(`Learning your routine · ${st.sessions} charge${st.sessions === 1 ? '' : 's'} so far`);
+                detail.push(`Learning your routine · ${charges(st.sessions)} so far`);
             break;
         case 'unplugged':
         default:

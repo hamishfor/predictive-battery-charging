@@ -9,9 +9,7 @@ import Gtk from 'gi://Gtk';
 
 import {ExtensionPreferences} from 'resource:///org/gnome/Shell/Extensions/js/extensions/prefs.js';
 
-const BUS_NAME = 'org.pbc.Daemon1';
-const OBJECT_PATH = '/org/pbc/Daemon1';
-const IFACE = 'org.pbc.Daemon1';
+import {BUS_NAME, IFACE, OBJECT_PATH, batteryLabel} from './status.js';
 
 function call(method, params, type) {
     const r = Gio.DBus.system.call_sync(
@@ -62,7 +60,7 @@ export default class PredictiveChargingPrefs extends ExtensionPreferences {
         if (Array.isArray(status.batteries) && status.batteries.length > 1) {
             state.add(row('Battery (combined)', `${status.capacity ?? '?'}%`));
             for (const b of status.batteries)
-                state.add(row(b.label || b.name, `${b.capacity ?? '?'}% · ${b.status} · thresholds ${b.thresholds ?? '?'}${b.energy_full_wh ? ` · ${b.energy_full_wh} Wh` : ''}`));
+                state.add(row(batteryLabel(b), `${b.capacity ?? '?'}% · ${b.status} · thresholds ${b.thresholds ?? '?'}${b.energy_full_wh ? ` · ${b.energy_full_wh} Wh` : ''}`));
         } else {
             state.add(row('Battery', `${status.capacity ?? '?'}% · thresholds ${status.thresholds ?? '?'}`));
         }
