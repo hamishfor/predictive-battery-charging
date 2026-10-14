@@ -3,7 +3,7 @@ resolver = "2"
 members = ["crates/pbc-hw", "crates/pbc-model", "crates/pbc-store", "crates/pbcd", "crates/pbcctl"]
 
 [workspace.package]
-version = "0.2.2"
+version = "0.2.3"
 edition = "2021"
 license = "GPL-3.0-or-later"
 rust-version = "1.89"
