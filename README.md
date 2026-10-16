@@ -6,27 +6,24 @@
 
 Predictive Battery Charging (`PBC`) is a smart battery health management tool, at it's core, it tries to extend the health of you devices battery by reducing the amount of time it sits at 100% by using a statistical model based on your behaviour to try and predict when your laptop charges and when it requires battery. As you use your laptop it learns about your relationship with your laptops battery and uses that information to hold back charging your device to full during certain charging sessions.
 
-Currently, it's programmed to be what I'd describe as cautious. It will charge fully untill it reaches a degree of confidence around your schedule where it will start to hold your battery back, only finishing charging when it gets near to when it thinks you'll unplug. Schedules will give it a confidence level of 1, so will more confidently frequently hold back charging.
+Currently, it's programmed to be what I'd describe as cautious. It will charge fully untill it reaches a degree of confidence around your schedule where it will start to hold your battery back, only finishing charging when it gets near to when it thinks you'll unplug.
 
 It runs as a small system daemon (`pbcd`), with an optional GNOME Shell extension to execute common battery management tasks and display information.
 
-Currently in active development.
+> [!IMPORTANT]
+> If your device is not in the [Supported hardware](#supported-hardware) table as `supported` you'll need to run the `pbcctl selftest` inorder to get the full use out of `pbcd`.
 
 ## Features
 
-- **Learns your routine.** It uses six months of plug-in history, weighted towards recent weeks so new habits are picked up quickly. All data remains local to the device.
-- **Holds by confidence.** A confident prediction of a long session, such as overnight, holds at `hold_min`. A less certain one holds higher, up to `hold_max`. With no prediction it charges to 100%.
-- **Charge hedging.** When an unplug may be near, it steps up to `ready_pct`, so leaving early still gives a good charge. Then it finishes at 100% just before you usually unplug.
-- **Schedules.** Optional "full by" times, such as weekday mornings.
-- **Quiet wake.** If the charge needs to finish while the laptop is asleep, it wakes for a few seconds to raise the limit, then goes back to sleep. Your screen, sound, network and apps stay asleep. Opening the lid or pressing a key wakes the laptop normally. It is on for tested models and after a guided `pbcctl selftest`, and turns itself off if a wake ever goes wrong. Otherwise it starts charging to 100% before the laptop sleeps. See `quiet_wake` in [Configuration](#configuration).
-- **Multi-battery.** Supports multiple internal batteries, such as ThinkPad Power Bridge models.
-- **GNOME integration.** A Quick Settings tile, and GNOME's own Battery Charging setting as the on/off switch.
+- Learns your routine.
+- Scheduling.
+- Multi-battery.
+- GNOME integration
+
 
 ## Supported hardware
 
-Predictive Battery Charging works with laptops whose kernel driver exposes battery charge limits, and with working sleep profiles. This repo maintains a list of tested devices that support everything pbcd requires. Most modern laptop devices _should_ work. Typically, devices with enterprise features such as those found in classes such as Dell Inspiron, or open hardware specifications such as Framework, Starlabs, and Clevo based designs will have a higher degree of success.
-
-Devices with the status: `tested` in the following support list will get all features enabled immediately.
+Predictive Battery Charging works with laptops whose kernel driver exposes battery charge limits, and with working sleep profiles. If this project gains traction and contributions, then I'll move this to a separate versioned list, but for now this works. Most modern laptop devices _should_ work.
 
 | Manufacturer | Family | Generation | Profile | Status |
 |---|---|---|---|---|
@@ -34,18 +31,19 @@ Devices with the status: `tested` in the following support list will get all fea
 | Lenovo | ThinkPad L | 420+ | `lenovo-thinkpad` | Expected to work |
 | Lenovo | ThinkPad P | 51/71+ | `lenovo-thinkpad` | Expected to work |
 | Lenovo | ThinkPad T | 420+ | `lenovo-thinkpad` | Expected to work |
-| Lenovo | ThinkPad T | 480 | `lenovo-thinkpad` | Tested |
+| Lenovo | ThinkPad T | 480 | `lenovo-thinkpad` | Supported |
 | Lenovo | ThinkPad X | 220+ | `lenovo-thinkpad` | Expected to work |
 | Lenovo | ThinkPad X1 Carbon | Gen 1+ | `lenovo-thinkpad` | Expected to work |
-| Lenovo | ThinkPad X1 Carbon | Gen 13 | `lenovo-thinkpad` | Tested |
+| Lenovo | ThinkPad X1 Carbon | Gen 13 | `lenovo-thinkpad` | Supported |
 | Lenovo | ThinkPad Z | 13/16 Gen 1+ | `lenovo-thinkpad` | Expected to work |
 
 **Status key:**
-- **Tested:** someone ran the guided test on that model, every step passed, and committed the results. All features should automatically enable.
+- **Supported:** someone ran the guided test on that model, every step passed, and committed the results. All features should automatically enable.
 - **Expected to work:** the profile matches, and pbcd checks the laptop itself as you use it. Quiet wake disabled until `pbcctl selftest` is run.
-- **Unsupported:** tested as partial or no support.
+- **Unsupported:** tested as partial or no support, `pbcd` will only monitor.
 
-On a laptop without a matching profile, `pbcd` only records charging activity and never changes a setting. Check your laptop with `pbcctl probe` after installing. To get yours supported, see [Help support your laptop](#help-support-your-laptop).
+If your device is not on this list, `pbcd` begins by only recording charging activity, until you run `pbcctl selftest`. Check your laptop with `pbcctl probe` after installing. To help out the community, and get your laptop supported from the gun, see [Help support your laptop](#help-support-your-laptop).
+
 
 ## Requirements
 
@@ -57,7 +55,6 @@ On a laptop without a matching profile, `pbcd` only records charging activity an
 | D-Bus services | UPower and polkit |
 | Desktop (Optional) | GNOME 48+ for the Quick Settings tile and the Settings switch. |
 
-Without GNOME, the daemon and `pbcctl` still work. Turn it on and off in the config file with `upower_switch = false`. Feel free to build management tooling for other WM's and DE's against this application.
 
 ## Install
 
@@ -117,11 +114,14 @@ pbcctl probe
 pbcctl daemon
 ```
 
-`probe` should list a hardware profile and your batteries. If it shows `profile: none`, your laptop isn't supported yet. pbcd will only record activity.
+`probe` should list a hardware profile and your batteries. If it shows `profile: none`, your laptop isn't supported yet. `pbcd` will only record.
 
-## Enable PBC
 
-We high-jack Gnome's settings.
+## Usage
+
+To get full use of `pbcd` run the guided self test: `pbcctl selftest`, follow the instructions.
+
+PBC high-jacks Gnome's settings.
 
 In **Settings → Power → Battery Charging**, choose **Preserve Battery Health**. To disable `pbcd` you can select **Maximise Charge**.
 
@@ -141,6 +141,7 @@ full_by = "08:00"
 ```
 
 Then run `sudo systemctl restart pbcd` or reboot.
+
 
 ## Command line
 
@@ -164,13 +165,6 @@ pbcd owns the limits while it runs in `control` mode. It reports a limit written
 
 `set`, `hold` and `full` read every limit back after writing it, and fail if the firmware reports something else.
 
-## Safety
-
-- Below 25% it always charges, whatever it has learned, defined, or scheduled. You can change this level with `floor_pct` (see [Configuration](#configuration)).
-- It only writes the battery charge limits. It never changes other device or app settings.
-- Before shutdown it sets the limit it wants held while the laptop is off. Most firmware keeps it. pbcd checks this after each restart.
-- If charging ever fails to start again after a hold, it stops limiting charging on that laptop for good.
-- Uninstalling restores normal charging to 100%.
 
 ## Configuration
 
@@ -185,6 +179,7 @@ All settings live in `/etc/pbcd/config.toml`, with comments. Restart the daemon 
 | `floor_pct` | `25` | Always charge below this level, whatever is learned or scheduled. On two-battery models it uses the combined charge. |
 | `quiet_wake` | `auto` | Brief wake during sleep to finish charging |
 | `upower_switch` | `true` | Use GNOME's Battery Charging setting as the on/off switch |
+
 
 ## Uninstall
 
@@ -201,25 +196,23 @@ extension/install.sh --uninstall
 sudo dist/install.sh --uninstall     # add --purge to also delete learned history
 ```
 
+
 ## Privacy
 
 Everything stays local on the laptop, in `/var/lib/pbcd/pbcd.db`. Unless you chose to contribute a profile here.
+
 
 ## Status
 
 Under active development.
 
-## Help support your laptop
 
-Predictive Battery Charging checks itself as you use it, and switches off anything that doesn't work on your laptop. For better results sooner, run the 15-minute guided test:
+## Contribute
 
-```sh
-sudo pbcctl selftest
-```
-
-To add your laptop model to the supported list for everyone, open a pull request with the results. [docs/DEVICE_SUPPORT.md](docs/DEVICE_SUPPORT.md) has the full checklist.
+To add your laptop model to the supported list for everyone, follow the instructions: see [docs/DEVICE_SUPPORT.md](docs/DEVICE_SUPPORT.md).
 
 Developers: see [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md).
+
 
 ## License and Disclaimer
 

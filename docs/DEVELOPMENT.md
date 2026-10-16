@@ -136,6 +136,4 @@ To release, bump `[workspace.package] version` in the root `Cargo.toml`, run `ca
 
 The release is the last job of `.github/workflows/ci.yml`. On a push to `main`, once lint, tests, the Rust 1.89 build and the package job all pass, it checks whether `v<version>` is tagged. If not, it tags the commit and publishes a GitHub release with the `.deb` and zip that the package job built and test-installed. Otherwise it does nothing, so editing dependencies doesn't release. A version with a suffix, such as `0.3.0-rc.1`, is published as a pre-release and packaged as `0.3.0~rc.1`, which Debian sorts before `0.3.0`.
 
-Don't create tags or releases by hand. A tag for the version stops the workflow from releasing it. To retry a failed release, fix it and push again, or run CI from the Actions tab.
-
 `packaging/build-deb.sh` sets the extension's `version-name` to the package version, which `gnome-extensions info` shows. The integer `version` in `extension/metadata.json` is separate. extensions.gnome.org sets it on upload.
