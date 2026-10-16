@@ -182,7 +182,13 @@ impl Core {
         let d = decide(&self.control, &input, &self.policy);
         self.track_accuracy(&d, pred.as_ref())?;
         if d.state != self.control {
-            tracing::info!(from = self.control.name(), to = d.state.name(), reason = %d.reason, "controller");
+            let same_reason = self
+                .last_decision
+                .as_ref()
+                .is_some_and(|l| l.reason == d.reason);
+            if d.state.name() != self.control.name() || !same_reason {
+                tracing::info!(from = self.control.name(), to = d.state.name(), reason = %d.reason, "controller");
+            }
             self.store
                 .set(KV_CONTROL, &serde_json::to_string(&d.state)?)?;
             self.control = d.state.clone();
