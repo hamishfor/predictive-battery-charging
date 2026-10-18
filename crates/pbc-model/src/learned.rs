@@ -35,12 +35,13 @@ pub struct RoutineConfig {
 }
 
 impl Default for RoutineConfig {
-    /// About six months of history. A 60-day half-life keeps last season's
-    /// routines in play, while a new job or term takes over within a few weeks.
+    /// About six months of history. A 90-day half-life keeps last season's
+    /// routines in play, while a new job or term takes over within about a month.
+    /// A reset re-learns at once.
     fn default() -> Self {
         Self {
             window_min: 90,
-            half_life_days: 60.0,
+            half_life_days: 90.0,
             min_similar: 5,
             quantile: 0.2,
             min_session_h: 3.0,
@@ -182,32 +183,47 @@ impl Predictor for Chain<'_> {
     }
 }
 
-/// Running record of how good past predictions were.
+/// Running record of how good past predictions were, weighted towards recent sessions.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Accuracy {
     /// Sessions that held for a prediction and were at their target when unplugged.
-    pub hits: u32,
+    pub hits: f64,
     /// Sessions that held for a prediction and were unplugged short of their target.
-    pub misses: u32,
+    pub misses: f64,
 }
+
+/// Each judged session scales the earlier record by this: a memory of about the last 18.
+/// A changed routine then shows within a week of sessions, however long the old record.
+const ACCURACY_KEEP: f64 = 0.945;
 
 impl Accuracy {
     pub fn record(&mut self, reached_target: bool) {
+        self.hits *= ACCURACY_KEEP;
+        self.misses *= ACCURACY_KEEP;
+        // Plain counts stored by older versions: shrink to the steady-state total, same ratio.
+        let n = self.hits + self.misses;
+        let cap = 1.0 / (1.0 - ACCURACY_KEEP) - 1.0;
+        if n > cap {
+            self.hits *= cap / n;
+            self.misses *= cap / n;
+        }
         if reached_target {
-            self.hits += 1;
+            self.hits += 1.0;
         } else {
-            self.misses += 1;
+            self.misses += 1.0;
         }
     }
 
     /// Confidence multiplier. 1.0 with no record. Each miss weighs three hits,
-    /// because ending short is the failure users notice.
+    /// because ending short is the failure users notice. From a clean record,
+    /// misses in a row give 0.89, 0.79, 0.69, 0.59, then 0.51 at five: a week of
+    /// misses moves a certain prediction's hold from 70% to 90%.
     pub fn factor(&self) -> f64 {
         let n = self.hits + self.misses;
-        if n == 0 {
+        if n <= 0.0 {
             return 1.0;
         }
-        let score = (self.hits as f64 - 3.0 * self.misses as f64) / n as f64;
+        let score = (self.hits - 3.0 * self.misses) / n;
         (0.5 + 0.5 * score).clamp(0.0, 1.0)
     }
 }
@@ -420,10 +436,42 @@ mod tests {
             a.record(true);
         }
         a.record(false);
-        assert!(a.factor() > 0.75 && a.factor() < 1.0, "{}", a.factor());
+        assert!(a.factor() > 0.7 && a.factor() < 0.8, "{}", a.factor());
         for _ in 0..3 {
             a.record(false);
         }
         assert!(a.factor() < 0.5, "{}", a.factor());
+    }
+
+    #[test]
+    fn a_long_record_does_not_hide_new_misses() {
+        let mut a = Accuracy::default();
+        for _ in 0..200 {
+            a.record(true);
+        }
+        for _ in 0..3 {
+            a.record(false);
+        }
+        assert!(a.factor() > 0.6, "3 misses: {}", a.factor());
+        for _ in 0..2 {
+            a.record(false);
+        }
+        let f = a.factor();
+        assert!((0.45..0.55).contains(&f), "a week of misses: {f}");
+        // And recovers once predictions hold up again.
+        for _ in 0..15 {
+            a.record(true);
+        }
+        assert!(a.factor() > 0.75, "{}", a.factor());
+    }
+
+    #[test]
+    fn old_integer_counts_still_load() {
+        let mut a: Accuracy = serde_json::from_str(r#"{"hits":100,"misses":0}"#).unwrap();
+        assert_eq!(a.factor(), 1.0);
+        for _ in 0..5 {
+            a.record(false);
+        }
+        assert!(a.factor() < 0.55, "{}", a.factor());
     }
 }

@@ -66,7 +66,7 @@ impl Default for HazardConfig {
             l2: 0.0005,
             iters: 1500,
             learning_rate: 0.3,
-            half_life_days: 60.0,
+            half_life_days: 90.0,
             max_age_days: 180,
             quantile: 0.2,
             min_session_h: 3.0,
