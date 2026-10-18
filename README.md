@@ -15,10 +15,10 @@ It runs as a small system daemon (`pbcd`), with an optional GNOME Shell extensio
 
 ## Features
 
-- Learns your routine.
-- Scheduling.
-- Multi-battery.
-- GNOME integration
+- Statistical learning model for your charging routine.
+- Charge scheduling.
+- Multi-battery support.
+- GNOME integration.
 
 
 ## Supported hardware
