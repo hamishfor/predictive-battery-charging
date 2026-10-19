@@ -60,6 +60,15 @@ check('graded hold says usual unplug', v.detail.some(d => d === 'Your usual unpl
 v = present({...base, state: 'topping_off', charge_to: 100}, now);
 check('topping off says 100', v.subtitle.startsWith('Charging to 100%'), v.subtitle);
 
+v = present({...base, state: 'topping_off', charge_to: 92, max_pct: 92}, now);
+check('topping off to max_pct', v.subtitle.startsWith('Charging to 92%'), v.subtitle);
+
+v = present({...base, state: 'normal', prediction: null, max_pct: 92}, now);
+check('normal charges to max_pct', v.subtitle.startsWith('Charging to 92%'), v.subtitle);
+
+v = present({...base, state: 'override', override_active: true, charge_to: 100, max_pct: 92}, now);
+check('override still says 100', v.subtitle.startsWith('Charging to 100%'), v.subtitle);
+
 v = present({...base, state: 'unplugged', plugged: false}, now);
 check('unplugged', v.subtitle.startsWith('On battery') && !v.subtitle.includes('100%'), v);
 check('unplugged can arm charge to full', v.canChargeNow && v.chargeNowLabel === 'Charge to full on next plug-in', v);

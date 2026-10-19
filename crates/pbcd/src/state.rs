@@ -71,8 +71,10 @@ pub struct Status {
     pub batteries: Vec<BatteryStatusJson>,
     /// What this machine has shown it can do (see pbc_model::selfcheck).
     pub capabilities: Vec<pbc_model::selfcheck::Record>,
-    /// The charge limit right now: 100, or a hold level between 70 and 99.
+    /// The charge limit right now: `max_pct`, a hold level below it, or 100 for "charge to full".
     pub charge_to: Option<u8>,
+    /// The most automatic charging goes to (`max_pct` in the config). 100 is no limit.
+    pub max_pct: u8,
     /// Where the current prediction's deadline came from: "learned", or "schedule" when
     /// the schedule brought it forward. None while still learning.
     pub prediction_source: Option<String>,
@@ -176,8 +178,8 @@ impl Core {
             online: self.online(),
             prediction: pred.as_ref(),
             override_requested: self.override_requested,
-            secs_to_full: self.charge.secs_to_full(self.last_capacity.unwrap_or(0)),
-            secs_ready_to_full: self.charge.secs_to_full(self.policy.ready_level),
+            secs_to_full: self.secs_to_top(self.last_capacity.unwrap_or(0)),
+            secs_ready_to_full: self.secs_to_top(self.policy.ready_level),
         };
         let d = decide(&self.control, &input, &self.policy);
         self.track_accuracy(&d, pred.as_ref())?;
@@ -209,8 +211,9 @@ impl Core {
                 .unwrap_or("")
                 .is_empty()
             {
-                // The session should end full: that's what the prediction promised.
-                self.store.set(KV_SESSION_TARGET, "100")?;
+                // The session should end at the top: that's what the prediction promised.
+                self.store
+                    .set(KV_SESSION_TARGET, &self.policy.top().end.to_string())?;
             }
         } else if d.state == State::Unplugged {
             if let Some(target) = self
@@ -396,8 +399,13 @@ impl Core {
             return Ok(None);
         }
         // From the current charge, the most a sleep on battery could need.
-        let secs = self.charge.secs_to_full(self.last_capacity.unwrap_or(0));
+        let secs = self.secs_to_top(self.last_capacity.unwrap_or(0));
         Ok(Some(p.full_by - secs - self.policy.margin_s))
+    }
+
+    /// Seconds from `from` to the automatic top-off level.
+    fn secs_to_top(&self, from: u8) -> i64 {
+        self.charge.secs_to(from, self.policy.top().end)
     }
 
     pub fn status(&self, now: Ts, profile: Option<String>) -> Result<Status> {
@@ -415,7 +423,8 @@ impl Core {
             target: self.last_decision.as_ref().map(|d| d.target),
             reason: self.last_decision.as_ref().map(|d| d.reason.clone()),
             override_active: self.override_requested,
-            secs_to_full: self.last_capacity.map(|c| self.charge.secs_to_full(c)),
+            secs_to_full: self.last_capacity.map(|c| self.secs_to_top(c)),
+            max_pct: self.policy.top().end,
             thresholds: None,
             alerts: self.alerts.clone(),
             paused: None,

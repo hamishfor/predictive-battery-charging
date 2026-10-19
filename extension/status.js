@@ -74,8 +74,10 @@ export function present(st, now = new Date()) {
     const paused = !!pausedWhy;
     const gnomeSwitch = st.gnome_switch === true;
     const fullBy = st.prediction?.full_by;
-    // The current charge limit: 100 (no limit), or a hold between 70 and 99.
-    const limit = Number.isInteger(st.charge_to) ? st.charge_to : 100;
+    // The most automatic charging goes to (config `max_pct`), 100 when unset.
+    const max = Number.isInteger(st.max_pct) ? st.max_pct : 100;
+    // The current charge limit: `max`, a hold below it, or 100 for "charge to full".
+    const limit = Number.isInteger(st.charge_to) ? st.charge_to : max;
     const conf = Number.isFinite(st.prediction?.confidence) ? Math.round(st.prediction.confidence * 100) : null;
     // No learned prediction yet. A schedule alone never holds.
     const learning = !st.prediction_source;
@@ -111,7 +113,7 @@ export function present(st, now = new Date()) {
             break;
         case 'topping_off':
             checked = true;
-            subtitle = 'Charging to 100%';
+            subtitle = `Charging to ${max}%`;
             headline = fullBy ? `${subtitle} · full by ${shortTime(fullBy, now)}` : subtitle;
             icon = 'battery-level-90-charging-symbolic';
             break;
@@ -121,7 +123,7 @@ export function present(st, now = new Date()) {
             detail.push('Until you unplug');
             break;
         case 'normal':
-            subtitle = withCap('Charging to 100%');
+            subtitle = withCap(`Charging to ${max}%`);
             if (learning)
                 detail.push(`Learning your routine · ${charges(st.sessions)} so far`);
             break;

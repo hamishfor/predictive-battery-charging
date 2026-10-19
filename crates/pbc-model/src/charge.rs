@@ -43,8 +43,14 @@ impl Default for ChargeModel {
 
 impl ChargeModel {
     pub fn secs_to_full(&self, from: u8) -> i64 {
-        let from = (from as usize).min(100);
-        self.secs[from..].iter().sum::<f64>().round() as i64
+        self.secs_to(from, 100)
+    }
+
+    /// Seconds from `from`% up to `to`%. Zero if already there.
+    pub fn secs_to(&self, from: u8, to: u8) -> i64 {
+        let to = (to as usize).min(100);
+        let from = (from as usize).min(to);
+        self.secs[from..to].iter().sum::<f64>().round() as i64
     }
 
     /// Minutes to charge across each `width`-point band, keyed by the band's

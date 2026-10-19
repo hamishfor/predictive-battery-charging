@@ -2,7 +2,7 @@
 //!
 //! Safety rules:
 //! - Never write on hardware without a matching profile (fail closed).
-//! - Below the floor (default 25%), always charge (Full), whatever the controller says.
+//! - Below the floor (default 25%), always charge (to `max_pct`), whatever the controller says.
 //! - Read back after every write. If the firmware disagrees, report an error and don't retry in a tight loop.
 //! - After switching to Full while on AC and below the ceiling, check that charging actually starts.
 //!
@@ -25,6 +25,8 @@ pub struct Actuator {
     root: SysRoot,
     profile: Profile,
     pub floor_pct: u8,
+    /// Where the floor rule charges to. 100 is full.
+    pub max_pct: u8,
     /// Battery name -> thresholds we last wrote (or confirmed) on it.
     last_written: BTreeMap<String, Thresholds>,
     /// (when we switched to Full, combined capacity then). Used to check charging resumed.
@@ -40,7 +42,7 @@ pub enum Outcome {
         from: Option<Thresholds>,
         to: Thresholds,
     },
-    /// Floor rule forced Full.
+    /// Floor rule forced charging to `max_pct`.
     Floor {
         to: Thresholds,
     },
@@ -64,11 +66,17 @@ pub const FULL: Thresholds = Thresholds { start: 0, end: 100 };
 pub const RESUME_GAP: u8 = 5;
 
 impl Actuator {
-    pub fn new(root: SysRoot, profile: Profile, floor_pct: u8) -> anyhow::Result<Self> {
+    pub fn new(
+        root: SysRoot,
+        profile: Profile,
+        floor_pct: u8,
+        max_pct: u8,
+    ) -> anyhow::Result<Self> {
         Ok(Self {
             root,
             profile,
             floor_pct,
+            max_pct,
             last_written: BTreeMap::new(),
             resume_check: None,
         })
@@ -125,9 +133,11 @@ impl Actuator {
         let bats = self.batteries();
         let combined = self.combined(&bats);
         let mut want = self.thresholds_for(target);
-        let floored = combined.capacity_pct.is_some_and(|c| c < self.floor_pct) && want != FULL;
+        let ceiling = self.thresholds_for(Target { end: self.max_pct });
+        let floored =
+            combined.capacity_pct.is_some_and(|c| c < self.floor_pct) && want.end < ceiling.end;
         if floored {
-            want = FULL;
+            want = ceiling;
         }
         // Forget batteries that are gone (BAT1 removed).
         self.last_written
@@ -269,7 +279,7 @@ mod tests {
 
     fn act(dir: &Path) -> Actuator {
         let root = SysRoot::new(dir);
-        Actuator::new(root, Profile::builtin().remove(0), 25).unwrap()
+        Actuator::new(root, Profile::builtin().remove(0), 25, 100).unwrap()
     }
 
     #[test]

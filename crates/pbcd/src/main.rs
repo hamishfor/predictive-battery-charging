@@ -162,8 +162,12 @@ impl Ctl {
         }
         let mut target = d.target;
         if !selfcheck::limiting_allowed(&self.core.lock().await.store) {
-            // Charging didn't resume after a hold on this machine. Never limit it again.
-            target = Target::FULL;
+            // Charging didn't resume after a hold on this machine. Never hold it again.
+            // A fixed `max_pct` is never raised, so it stays.
+            let top = self.core.lock().await.policy.top();
+            if target != Target::FULL {
+                target = top;
+            }
         }
         let mut act = self.actuator.lock().await;
         let Some(a) = act.as_mut() else {
@@ -269,6 +273,7 @@ async fn main() -> Result<()> {
             hw.root.clone(),
             p.clone(),
             cfg.floor_pct,
+            cfg.max_pct.clamp(50, 100),
         )?),
         _ => None,
     };
@@ -315,9 +320,21 @@ async fn main() -> Result<()> {
     let store = Store::open(&cfg.db)?;
     let mut core = state::Core::new(store, scfg, schedule, tz)?;
     core.policy.min_confidence = cfg.min_confidence;
-    core.policy.min_hold = cfg.hold_min.clamp(50, 99);
-    core.policy.max_hold = cfg.hold_max.clamp(core.policy.min_hold, 99);
-    core.policy.ready_level = cfg.ready_pct.clamp(core.policy.min_hold, 99);
+    core.policy.max_level = cfg.max_pct.clamp(50, 100);
+    if cfg.max_pct < 50 {
+        tracing::warn!(max_pct = cfg.max_pct, "max_pct below 50: using 50");
+    } else if cfg.max_pct < cfg.hold_min {
+        tracing::warn!(
+            max_pct = cfg.max_pct,
+            hold_min = cfg.hold_min,
+            "max_pct below hold_min: holding at {}% throughout",
+            cfg.max_pct
+        );
+    }
+    let hold_cap = core.policy.max_level.min(99);
+    core.policy.min_hold = cfg.hold_min.clamp(50, hold_cap);
+    core.policy.max_hold = cfg.hold_max.clamp(core.policy.min_hold, hold_cap);
+    core.policy.ready_level = cfg.ready_pct.clamp(core.policy.min_hold, hold_cap);
     core.policy.margin_s = cfg.margin_min * 60;
     if args.rebuild_sessions {
         let n = core.rebuild(scfg, now())?;
@@ -564,12 +581,13 @@ async fn before_sleep(ctl: &Ctl, cfg: &config::Config, quiet_wake: bool, hw: &hw
         unplugged_topoff,
     );
     tracing::info!(?action, state = d.state.name(), "sleep plan");
+    let top = ctl.core.lock().await.policy.top();
     let mut act = ctl.actuator.lock().await;
     let Some(a) = act.as_mut() else { return };
     match action {
         SleepAction::Nothing => {}
         SleepAction::StartNow => {
-            if let Err(e) = a.apply(Target::FULL, now()) {
+            if let Err(e) = a.apply(top, now()) {
                 tracing::error!("pre-sleep top-off: {e:#}");
             }
         }
@@ -578,7 +596,7 @@ async fn before_sleep(ctl: &Ctl, cfg: &config::Config, quiet_wake: bool, hw: &hw
                 tracing::info!("selftest wake pending: leaving its plan in place");
                 return;
             }
-            let full = a.thresholds_for(Target::FULL);
+            let full = a.thresholds_for(top);
             let gap = hw
                 .profile
                 .as_ref()
@@ -600,7 +618,7 @@ async fn before_sleep(ctl: &Ctl, cfg: &config::Config, quiet_wake: bool, hw: &hw
             if let Err(e) = wakeplan::write(&cfg.runtime_dir, &plan) {
                 // Without a plan, the hook does nothing. Fall back to topping off now.
                 tracing::error!("writing wake plan: {e}; topping off before sleep instead");
-                let _ = a.apply(Target::FULL, now());
+                let _ = a.apply(top, now());
             }
         }
     }
@@ -616,7 +634,7 @@ async fn before_shutdown(ctl: &Ctl, v: ShutdownValue) {
         ShutdownValue::Hold => Target {
             end: ctl.core.lock().await.policy.min_hold,
         },
-        ShutdownValue::Full => Target::FULL,
+        ShutdownValue::Full => ctl.core.lock().await.policy.top(),
     };
     if let Some(a) = ctl.actuator.lock().await.as_mut() {
         match a.apply(target, now()) {

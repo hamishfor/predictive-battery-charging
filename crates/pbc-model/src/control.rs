@@ -3,8 +3,9 @@
 //! `decide(prev, input, policy)` returns the next state and the charge limit.
 //! The limit is graded by confidence: a confident prediction of a long session
 //! holds low (down to 70%), a weak one holds high (up to 99%), and no prediction
-//! charges to 100%. As the predicted unplug nears, the limit steps up to a ready
-//! level (90%), then to 100%. "Full" always means 100%.
+//! charges to the maximum (100% unless `max_level` is set lower). As the
+//! predicted unplug nears, the limit steps up to a ready level (90%), then to
+//! the maximum. Only the user's override goes past `max_level`, to 100%.
 //!
 //! It has no I/O, so every transition is unit-tested. The daemon calls it on
 //! every tick and event, and writes thresholds to match.
@@ -38,13 +39,13 @@ pub enum State {
     /// Plugged in, with no prediction worth acting on. Charges to the level
     /// confidence allows, which is 100% when there's no prediction at all.
     Normal,
-    /// Holding below full ahead of a predicted unplug at `full_by`.
-    /// The level steps up as the unplug gets closer, then `topoff_at` starts the final charge to 100%.
+    /// Holding below the maximum ahead of a predicted unplug at `full_by`.
+    /// The level steps up as the unplug gets closer, then `topoff_at` starts the final charge to `max_level`.
     Holding { full_by: Ts, topoff_at: Ts },
-    /// Charging to 100% for `full_by`. Latched until unplug, or until
+    /// Charging to `max_level` for `full_by`. Latched until unplug, or until
     /// `full_by + release_after_s`, so it doesn't flap as capacity rises.
     ToppingOff { full_by: Ts },
-    /// The user asked for a full charge. Lasts until the end of this plug-in
+    /// The user asked for a full charge, to 100% whatever `max_level` says. Lasts until the end of this plug-in
     /// session (requested on battery: until the end of the next one).
     Override,
 }
@@ -63,7 +64,7 @@ impl State {
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct Policy {
-    /// Below this confidence a prediction has no effect: charge to 100%.
+    /// Below this confidence a prediction has no effect: charge to `max_level`.
     pub min_confidence: f64,
     /// Extra time before the estimated top-off start (seconds).
     pub margin_s: i64,
@@ -77,6 +78,8 @@ pub struct Policy {
     pub ready_level: u8,
     /// Step up to `ready_level` once the predicted unplug is this close.
     pub ready_window_s: i64,
+    /// The most any automatic decision charges to. 100 is no limit.
+    pub max_level: u8,
 }
 
 impl Default for Policy {
@@ -89,11 +92,19 @@ impl Default for Policy {
             max_hold: 99,
             ready_level: 90,
             ready_window_s: 3 * 3600,
+            max_level: 100,
         }
     }
 }
 
 impl Policy {
+    /// The automatic top-off target: `max_level`, or full when that's 100.
+    pub fn top(&self) -> Target {
+        Target {
+            end: self.max_level.min(100),
+        }
+    }
+
     /// The hold level for a confidence. Linear from `max_hold` at `min_confidence`
     /// down to `min_hold` at confidence 1.0, rounded to whole percent.
     pub fn hold_for(&self, confidence: f64) -> u8 {
@@ -113,9 +124,9 @@ pub struct Input<'a> {
     /// 100%. If on battery, the next plug-in does. The caller clears it when
     /// that plug-in session ends.
     pub override_requested: bool,
-    /// Seconds from the current capacity to 100%.
+    /// Seconds from the current capacity to `max_level`.
     pub secs_to_full: i64,
-    /// Seconds from `ready_level` to 100%, for planning the final step.
+    /// Seconds from `ready_level` to `max_level`, for planning the final step.
     pub secs_ready_to_full: i64,
 }
 
@@ -127,23 +138,26 @@ pub struct Decision {
 }
 
 pub fn decide(prev: &State, i: &Input<'_>, p: &Policy) -> Decision {
+    let max = p.max_level.min(100);
     let d = |state: State, end: u8, reason: String| Decision {
         state,
-        target: Target { end },
+        target: Target { end: end.min(max) },
         reason,
     };
 
     if i.override_requested {
-        // On battery: open the limit now, so the next plug-in charges straight to 100%,
-        // even if pbcd misses the plug event (asleep, or off).
-        if !i.online {
-            return d(
-                State::Unplugged,
-                100,
-                "on battery: next plug-in charges to 100%".into(),
-            );
-        }
-        return d(State::Override, 100, "charge to full requested".into());
+        // The only decision allowed past `max_level`. On battery: open the limit now, so
+        // the next plug-in charges straight to 100%, even if pbcd misses the plug event.
+        let (state, reason) = if i.online {
+            (State::Override, "charge to full requested")
+        } else {
+            (State::Unplugged, "on battery: next plug-in charges to 100%")
+        };
+        return Decision {
+            state,
+            target: Target::FULL,
+            reason: reason.into(),
+        };
     }
 
     let pred = i
@@ -152,46 +166,44 @@ pub fn decide(prev: &State, i: &Input<'_>, p: &Policy) -> Decision {
 
     if !i.online {
         // Leave the limit the next plug-in would start with, so a plug-in pbcd doesn't see is held too.
-        let end = pred.map(|pr| p.hold_for(pr.confidence)).unwrap_or(100);
+        let end = pred.map(|pr| p.hold_for(pr.confidence)).unwrap_or(max);
         return d(State::Unplugged, end, "on battery".into());
     }
     if let State::ToppingOff { full_by } = *prev {
         if i.now < full_by + p.release_after_s {
             return d(
                 State::ToppingOff { full_by },
-                100,
-                format!("charging to 100%, ready by {}", hm(full_by)),
+                max,
+                format!("charging to {max}%, ready by {}", hm(full_by)),
             );
         }
     }
     let Some(pr) = pred else {
         return d(
             State::Normal,
-            100,
-            "no confident prediction: charging to 100%".into(),
+            max,
+            format!("no confident prediction: charging to {max}%"),
         );
     };
 
-    // Final step: 100% in time for the predicted unplug.
+    // Final step: `max` in time for the predicted unplug.
     let topoff_at = pr.full_by - i.secs_to_full.max(0) - p.margin_s;
     if i.now >= topoff_at {
         return d(
             State::ToppingOff {
                 full_by: pr.full_by,
             },
-            100,
-            format!("charging to 100% ({})", pr.reason),
+            max,
+            format!("charging to {max}% ({})", pr.reason),
         );
     }
     // Middle step: once the unplug may be close, stand at the ready level, so an
     // early unplug still leaves a good charge.
-    let hold = p.hold_for(pr.confidence);
+    let hold = p.hold_for(pr.confidence).min(max);
+    let ready = p.ready_level.min(max);
     let ready_at = pr.full_by - p.ready_window_s;
-    let (end, why) = if i.now >= ready_at && hold < p.ready_level {
-        (
-            p.ready_level,
-            format!("{}% while an unplug may be near", p.ready_level),
-        )
+    let (end, why) = if i.now >= ready_at && hold < ready {
+        (ready, format!("{ready}% while an unplug may be near"))
     } else {
         (hold, format!("holding at {hold}%"))
     };
@@ -202,7 +214,7 @@ pub fn decide(prev: &State, i: &Input<'_>, p: &Policy) -> Decision {
         },
         end,
         format!(
-            "{why}, 100% by {} ({}, confidence {:.0}%)",
+            "{why}, {max}% by {} ({}, confidence {:.0}%)",
             hm(pr.full_by),
             pr.reason,
             pr.confidence * 100.0
@@ -216,9 +228,9 @@ pub fn decide(prev: &State, i: &Input<'_>, p: &Policy) -> Decision {
 pub enum SleepAction {
     /// Nothing to change.
     Nothing,
-    /// Start the top-off to 100% now, before sleeping.
+    /// Start the top-off to `max_level` now, before sleeping.
     StartNow,
-    /// Hold through sleep, and do a quiet maintenance wake at `at` to start the top-off to 100%.
+    /// Hold through sleep, and do a quiet maintenance wake at `at` to start the top-off to `max_level`.
     Wake { at: Ts },
 }
 

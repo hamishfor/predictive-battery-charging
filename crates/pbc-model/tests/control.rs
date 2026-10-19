@@ -432,3 +432,76 @@ fn learned_bands_skip_the_prior() {
     // 70 is each run's start level, so it isn't learned. 71..=80 are.
     assert_eq!(m.learned_bands(5), [(75, 15.0)]);
 }
+
+#[test]
+fn max_level_caps_every_automatic_decision() {
+    let pol = Policy {
+        max_level: 92,
+        ..Policy::default()
+    };
+    let d = decide(&State::Unplugged, &input(0, true, None), &pol);
+    assert_eq!(
+        (d.state.clone(), end(&d)),
+        (State::Normal, 92),
+        "no prediction"
+    );
+
+    // A weak prediction would hold at 99: capped.
+    let p = pred(10 * H, 0.3);
+    let d = decide(&State::Unplugged, &input(0, true, Some(&p)), &pol);
+    assert!(matches!(d.state, State::Holding { .. }));
+    assert_eq!(end(&d), 92);
+    let d = decide(&State::Unplugged, &input(0, false, Some(&p)), &pol);
+    assert_eq!(end(&d), 92, "on battery");
+
+    // Confident: holds low, then tops off to the max, not 100.
+    let p = pred(10 * H, 1.0);
+    assert_eq!(
+        end(&decide(&State::Unplugged, &input(0, true, Some(&p)), &pol)),
+        70
+    );
+    let d = decide(&State::Unplugged, &input(10 * H - 60, true, Some(&p)), &pol);
+    assert!(matches!(d.state, State::ToppingOff { .. }));
+    assert_eq!(end(&d), 92);
+    assert!(d.reason.contains("92%"), "{}", d.reason);
+    let d = decide(&d.state, &input(10 * H + 60, true, Some(&p)), &pol);
+    assert_eq!(end(&d), 92, "latched top-off");
+}
+
+#[test]
+fn max_level_below_ready_level_caps_ready() {
+    let pol = Policy {
+        max_level: 85,
+        ..Policy::default()
+    };
+    let p = pred(10 * H, 1.0);
+    // Inside the ready window, before the top-off: ready (90) capped to 85.
+    let d = decide(&State::Unplugged, &input(8 * H, true, Some(&p)), &pol);
+    assert_eq!(end(&d), 85, "{d:?}");
+}
+
+#[test]
+fn charge_to_full_ignores_max_level() {
+    let pol = Policy {
+        max_level: 92,
+        ..Policy::default()
+    };
+    let mut i = input(0, true, None);
+    i.override_requested = true;
+    let d = decide(&State::Normal, &i, &pol);
+    assert_eq!((d.state.clone(), end(&d)), (State::Override, 100));
+    i.online = false;
+    assert_eq!(
+        end(&decide(&State::Override, &i, &pol)),
+        100,
+        "armed on battery"
+    );
+}
+
+#[test]
+fn secs_to_stops_at_the_target() {
+    let m = ChargeModel::default();
+    assert_eq!(m.secs_to(80, 100), m.secs_to_full(80));
+    assert_eq!(m.secs_to(80, 90), m.secs_to_full(80) - m.secs_to_full(90));
+    assert_eq!(m.secs_to(95, 90), 0);
+}

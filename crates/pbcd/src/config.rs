@@ -31,8 +31,11 @@ pub struct Config {
     /// `hold_max`, and no prediction charges to 100%.
     pub hold_min: u8,
     pub hold_max: u8,
-    /// While an unplug may be near, step up to this level before the final charge to 100%.
+    /// While an unplug may be near, step up to this level before the final charge.
     pub ready_pct: u8,
+    /// Never charge past this, except for "charge to full" (charge-now). Replaces 100%
+    /// as the top-off and no-prediction level; holds are capped to it.
+    pub max_pct: u8,
     /// Ignore predictions below this confidence.
     pub min_confidence: f64,
     /// Start the top-off this many minutes earlier than the estimate.
@@ -101,6 +104,7 @@ impl Default for Config {
             hold_min: 70,
             hold_max: 99,
             ready_pct: 90,
+            max_pct: 100,
             min_confidence: 0.3,
             margin_min: 15,
             quiet_wake: QuietWake::Auto,
@@ -192,6 +196,7 @@ mod tests {
             mode = "control"
             hold_min = 75
             hold_max = 95
+            max_pct = 92
             quiet_wake = "off"
             sleep_fallback = "hold"
             shutdown = "full"
@@ -199,7 +204,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(c.mode, Mode::Control);
-        assert_eq!((c.hold_min, c.hold_max), (75, 95));
+        assert_eq!((c.hold_min, c.hold_max, c.max_pct), (75, 95, 92));
         assert_eq!(c.quiet_wake, QuietWake::Off);
         assert_eq!(c.sleep_fallback, SleepFallback::Hold);
         assert_eq!(c.shutdown, ShutdownValue::Full);
