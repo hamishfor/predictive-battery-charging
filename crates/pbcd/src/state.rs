@@ -22,11 +22,13 @@ pub const KV_HAZARD_MODEL: &str = "hazard_model";
 pub const KV_BACKTEST: &str = "predictor_backtest";
 /// The open session's target, so its outcome can be judged at unplug: (charge_to, was holding for a prediction).
 pub const KV_SESSION_TARGET: &str = "session_target";
-/// Capacity at an unplug short of its target. It becomes a miss only once the battery is used.
+/// Capacity at an unplug short of its target. It becomes a miss only once the battery is used,
+/// and is dropped once a later plug-in charges back to it.
 pub const KV_PENDING_MISS: &str = "pending_miss";
 
-/// Drain since a short unplug that makes it a miss. Unplugging and plugging in elsewhere
-/// (home, then work) isn't one. Well above jitter and idle drain on a hungry battery.
+/// Net drain below a short unplug's capacity that makes it a miss. Unplugging and charging
+/// elsewhere (home, then work) isn't one; brief top-ups on the way only offset the drain.
+/// Well above jitter and idle drain on a hungry battery.
 const MISS_DRAIN_PCT: u8 = 15;
 
 pub struct Core {
@@ -213,15 +215,21 @@ impl Core {
             .get(KV_PENDING_MISS)?
             .and_then(|v| v.parse::<u8>().ok())
         {
-            if self.online() {
-                tracing::info!(at_unplug, capacity = ?self.last_capacity, "plugged back in before using the battery: not judged");
-                self.store.set(KV_PENDING_MISS, "")?;
-            } else if self
-                .last_capacity
-                .is_some_and(|c| c + MISS_DRAIN_PCT <= at_unplug)
-            {
-                self.record_accuracy(false, at_unplug)?;
-                self.store.set(KV_PENDING_MISS, "")?;
+            match self.last_capacity {
+                Some(c) if c + MISS_DRAIN_PCT <= at_unplug => {
+                    self.record_accuracy(false, at_unplug)?;
+                    self.store.set(KV_PENDING_MISS, "")?;
+                }
+                // Same 3-point jitter allowance as at unplug.
+                Some(c) if self.online() && c + 3 >= at_unplug => {
+                    tracing::info!(
+                        at_unplug,
+                        capacity = c,
+                        "recharged before the battery was used: not judged"
+                    );
+                    self.store.set(KV_PENDING_MISS, "")?;
+                }
+                _ => {}
             }
         }
         let held = matches!(d.state, State::Holding { .. } | State::ToppingOff { .. });
@@ -914,22 +922,53 @@ mod tests {
         assert_eq!(c.accuracy.misses, 1.0);
     }
 
-    #[test]
-    fn short_unplug_then_plugged_in_elsewhere_is_not_judged() {
-        let mut c = core();
-        let unplug = unplugged_short(&mut c);
-        // Home, then straight onto the charger at work.
-        on_battery(&mut c, unplug + 1800, 55);
+    fn plugged(c: &mut Core, ts: Ts, capacity: u8) {
         c.event(PowerEvent::Ac {
-            ts: unplug + 2400,
+            ts,
             online: true,
-            capacity: Some(55),
+            capacity: Some(capacity),
         })
         .unwrap();
-        c.decide(unplug + 2400).unwrap();
+        c.decide(ts).unwrap();
+    }
+
+    #[test]
+    fn short_unplug_then_charged_elsewhere_is_not_judged() {
+        let mut c = core();
+        let unplug = unplugged_short(&mut c);
+        // Home, then onto the charger at work.
+        on_battery(&mut c, unplug + 1800, 55);
+        plugged(&mut c, unplug + 2400, 55);
+        assert!(!c.store.get(KV_PENDING_MISS).unwrap().unwrap().is_empty());
+        plugged(&mut c, unplug + 3600, 58);
         // Back on battery and drained: the earlier unplug stays unjudged.
         on_battery(&mut c, unplug + 6 * 3600, 30);
         assert_eq!(c.accuracy, Default::default());
+    }
+
+    #[test]
+    fn brief_top_up_does_not_clear_a_short_unplug() {
+        let mut c = core();
+        let unplug = unplugged_short(&mut c);
+        on_battery(&mut c, unplug + 3600, 50);
+        // Ten minutes at a café: 50 to 53, not back to 60.
+        plugged(&mut c, unplug + 3600, 50);
+        plugged(&mut c, unplug + 4200, 53);
+        on_battery(&mut c, unplug + 4200, 53);
+        // Net drain 14: not yet.
+        on_battery(&mut c, unplug + 3 * 3600, 46);
+        assert_eq!(c.accuracy, Default::default());
+        on_battery(&mut c, unplug + 4 * 3600, 45);
+        assert_eq!(c.accuracy.misses, 1.0);
+    }
+
+    #[test]
+    fn drained_while_off_then_plugged_in_is_a_miss() {
+        let mut c = core();
+        let unplug = unplugged_short(&mut c);
+        // The first reading after a day powered off is on the charger, at 40%.
+        plugged(&mut c, unplug + 10 * 3600, 40);
+        assert_eq!(c.accuracy.misses, 1.0);
     }
 
     #[test]
