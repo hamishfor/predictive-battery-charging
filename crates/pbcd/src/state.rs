@@ -22,6 +22,12 @@ pub const KV_HAZARD_MODEL: &str = "hazard_model";
 pub const KV_BACKTEST: &str = "predictor_backtest";
 /// The open session's target, so its outcome can be judged at unplug: (charge_to, was holding for a prediction).
 pub const KV_SESSION_TARGET: &str = "session_target";
+/// Capacity at an unplug short of its target. It becomes a miss only once the battery is used.
+pub const KV_PENDING_MISS: &str = "pending_miss";
+
+/// Drain since a short unplug that makes it a miss. Unplugging and plugging in elsewhere
+/// (home, then work) isn't one. Well above jitter and idle drain on a hungry battery.
+const MISS_DRAIN_PCT: u8 = 15;
 
 pub struct Core {
     pub store: Store,
@@ -202,6 +208,22 @@ impl Core {
     /// Remember what a learned prediction aimed for while plugged in, and judge it at unplug.
     /// Every prediction is learned. A schedule only moves its deadline earlier.
     fn track_accuracy(&mut self, d: &Decision, pred: Option<&Prediction>) -> Result<()> {
+        if let Some(at_unplug) = self
+            .store
+            .get(KV_PENDING_MISS)?
+            .and_then(|v| v.parse::<u8>().ok())
+        {
+            if self.online() {
+                tracing::info!(at_unplug, capacity = ?self.last_capacity, "plugged back in before using the battery: not judged");
+                self.store.set(KV_PENDING_MISS, "")?;
+            } else if self
+                .last_capacity
+                .is_some_and(|c| c + MISS_DRAIN_PCT <= at_unplug)
+            {
+                self.record_accuracy(false, at_unplug)?;
+                self.store.set(KV_PENDING_MISS, "")?;
+            }
+        }
         let held = matches!(d.state, State::Holding { .. } | State::ToppingOff { .. });
         if held && pred.is_some() {
             if self
@@ -222,11 +244,12 @@ impl Core {
                 .and_then(|v| v.parse::<u8>().ok())
             {
                 // Within 3 points of the target counts as ready. Capacity readings jitter.
-                let reached = self.last_capacity.is_some_and(|c| c + 3 >= target);
-                self.accuracy.record(reached);
-                tracing::info!(reached, target, capacity = ?self.last_capacity, factor = self.accuracy.factor(), "learned prediction judged");
-                self.store
-                    .set(KV_ACCURACY, &serde_json::to_string(&self.accuracy)?)?;
+                match self.last_capacity {
+                    Some(c) if c + 3 >= target => self.record_accuracy(true, target)?,
+                    // Short, but only a miss if it runs on battery before the next plug-in.
+                    Some(c) => self.store.set(KV_PENDING_MISS, &c.to_string())?,
+                    None => self.record_accuracy(false, target)?,
+                }
                 self.store.set(KV_SESSION_TARGET, "")?;
             }
         } else if matches!(d.state, State::Override) {
@@ -234,6 +257,13 @@ impl Core {
             self.store.set(KV_SESSION_TARGET, "")?;
         }
         Ok(())
+    }
+
+    fn record_accuracy(&mut self, reached: bool, target: u8) -> Result<()> {
+        self.accuracy.record(reached);
+        tracing::info!(reached, target, capacity = ?self.last_capacity, factor = self.accuracy.factor(), "learned prediction judged");
+        self.store
+            .set(KV_ACCURACY, &serde_json::to_string(&self.accuracy)?)
     }
 
     pub fn set_override(&mut self, on: bool) -> Result<()> {
@@ -837,6 +867,85 @@ mod tests {
         .unwrap();
         c.decide(NIGHT + 180).unwrap();
         assert!(!c.override_requested);
+    }
+
+    /// Held overnight from `NIGHT`, then unplugged at 60%, short of the top.
+    fn unplugged_short(c: &mut Core) -> Ts {
+        c.event(PowerEvent::Ac {
+            ts: NIGHT,
+            online: true,
+            capacity: Some(55),
+        })
+        .unwrap();
+        assert!(!c.decide(NIGHT + 60).unwrap().target.is_full());
+        let unplug = NIGHT + 3600;
+        c.event(PowerEvent::Ac {
+            ts: unplug,
+            online: false,
+            capacity: Some(60),
+        })
+        .unwrap();
+        c.decide(unplug).unwrap();
+        unplug
+    }
+
+    fn on_battery(c: &mut Core, ts: Ts, capacity: u8) {
+        c.event(PowerEvent::Ac {
+            ts,
+            online: false,
+            capacity: Some(capacity),
+        })
+        .unwrap();
+        c.decide(ts).unwrap();
+    }
+
+    #[test]
+    fn short_unplug_is_a_miss_once_the_battery_is_used() {
+        let mut c = core();
+        let unplug = unplugged_short(&mut c);
+        assert_eq!(c.accuracy, Default::default(), "not judged at unplug");
+        on_battery(&mut c, unplug + 1800, 46);
+        assert_eq!(c.accuracy, Default::default(), "14 points: not yet");
+        on_battery(&mut c, unplug + 3600, 45);
+        assert_eq!(c.accuracy.misses, 1.0);
+        assert_eq!(c.accuracy.hits, 0.0);
+        // Judged once.
+        on_battery(&mut c, unplug + 7200, 20);
+        assert_eq!(c.accuracy.misses, 1.0);
+    }
+
+    #[test]
+    fn short_unplug_then_plugged_in_elsewhere_is_not_judged() {
+        let mut c = core();
+        let unplug = unplugged_short(&mut c);
+        // Home, then straight onto the charger at work.
+        on_battery(&mut c, unplug + 1800, 55);
+        c.event(PowerEvent::Ac {
+            ts: unplug + 2400,
+            online: true,
+            capacity: Some(55),
+        })
+        .unwrap();
+        c.decide(unplug + 2400).unwrap();
+        // Back on battery and drained: the earlier unplug stays unjudged.
+        on_battery(&mut c, unplug + 6 * 3600, 30);
+        assert_eq!(c.accuracy, Default::default());
+    }
+
+    #[test]
+    fn short_unplug_survives_a_restart() {
+        let mut c = core();
+        let unplug = unplugged_short(&mut c);
+        let Core { store, .. } = c;
+        let mut c = Core::new(
+            store,
+            SessionConfig::default(),
+            Schedule::new(&[]).unwrap(),
+            jiff::tz::TimeZone::UTC,
+        )
+        .unwrap();
+        on_battery(&mut c, unplug + 3600, 40);
+        assert_eq!(c.accuracy.misses, 1.0);
     }
 
     #[test]

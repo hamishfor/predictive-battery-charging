@@ -188,7 +188,8 @@ impl Predictor for Chain<'_> {
 pub struct Accuracy {
     /// Sessions that held for a prediction and were at their target when unplugged.
     pub hits: f64,
-    /// Sessions that held for a prediction and were unplugged short of their target.
+    /// Sessions that held for a prediction, were unplugged short of their target,
+    /// and then ran on battery before the next plug-in.
     pub misses: f64,
 }
 
