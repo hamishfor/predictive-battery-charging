@@ -152,7 +152,15 @@ impl Ctl {
     }
 
     async fn step_inner(&self) -> Result<Option<Target>> {
-        let d = self.core.lock().await.decide(now())?;
+        let paused = self.paused.lock().await.is_some();
+        let d = {
+            let mut c = self.core.lock().await;
+            c.in_control = self.mode == Mode::Control
+                && !paused
+                && self.actuator.lock().await.is_some()
+                && selfcheck::limiting_allowed(&c.store);
+            c.decide(now())?
+        };
         if self.mode != Mode::Control {
             return Ok(None);
         }

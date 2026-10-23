@@ -20,16 +20,30 @@ pub const KV_CHARGE_MODEL: &str = "charge_model";
 pub const KV_ACCURACY: &str = "prediction_accuracy";
 pub const KV_HAZARD_MODEL: &str = "hazard_model";
 pub const KV_BACKTEST: &str = "predictor_backtest";
-/// The open session's target, so its outcome can be judged at unplug: (charge_to, was holding for a prediction).
+/// The session held for a learned prediction ([`Held`]), so it can be judged once it ends.
 pub const KV_SESSION_TARGET: &str = "session_target";
-/// Capacity at an unplug short of its target. It becomes a miss only once the battery is used,
-/// and is dropped once a later plug-in charges back to it.
+/// Capacities at unplugs short of their target that the limit caused. Each becomes a miss
+/// only once the battery is used, and is dropped once a later plug-in charges back to it.
 pub const KV_PENDING_MISS: &str = "pending_miss";
 
 /// Net drain below a short unplug's capacity that makes it a miss. Unplugging and charging
 /// elsewhere (home, then work) isn't one; brief top-ups on the way only offset the drain.
 /// Well above jitter and idle drain on a hungry battery.
 const MISS_DRAIN_PCT: u8 = 15;
+
+/// A session held for a learned prediction. Judged once unplugged for longer than the merge gap.
+#[derive(Debug, Clone, PartialEq, Serialize, serde::Deserialize)]
+struct Held {
+    /// What the prediction promised by unplug: the top.
+    target: u8,
+    /// When holding started, and the capacity then: where an unlimited charge would have started.
+    since: Ts,
+    from: Option<u8>,
+    /// The battery reached a hold level, so the limit stopped charging at some point.
+    limited: bool,
+    /// When unplugged, and the capacity then.
+    unplugged: Option<(Ts, Option<u8>)>,
+}
 
 pub struct Core {
     pub store: Store,
@@ -52,6 +66,11 @@ pub struct Core {
     /// Trained unplug model, used only while `backtest.use_model` says it beats `Routine` here.
     pub hazard: Option<pbc_model::hazard::HazardModel>,
     pub backtest: Option<pbc_model::hazard::Backtest>,
+    /// pbcd is writing the limit: control mode, not paused, limiting allowed. Set by the caller.
+    /// Holds it didn't write aren't judged.
+    pub in_control: bool,
+    /// A replug within this of an unplug continues the held session (as for sessions).
+    merge_gap_s: Ts,
 }
 
 /// Snapshot of current state for the D-Bus API and the CLI.
@@ -110,6 +129,7 @@ impl Core {
         schedule: Schedule,
         tz: jiff::tz::TimeZone,
     ) -> Result<Self> {
+        let merge_gap_s = scfg.merge_gap_s;
         let mut builder = SessionBuilder::new(scfg);
         // Replay events after the last stored session, to restore the open
         // session and any pending one. Sessions before that are already stored.
@@ -158,6 +178,8 @@ impl Core {
             accuracy,
             hazard,
             backtest,
+            in_control: true,
+            merge_gap_s,
         })
     }
 
@@ -190,7 +212,7 @@ impl Core {
             secs_ready_to_full: self.secs_to_top(self.policy.ready_level),
         };
         let d = decide(&self.control, &input, &self.policy);
-        self.track_accuracy(&d, pred.as_ref())?;
+        self.track_accuracy(&d, pred.as_ref(), now)?;
         if d.state != self.control {
             let same_reason = self
                 .last_decision
@@ -207,69 +229,126 @@ impl Core {
         Ok(d)
     }
 
-    /// Remember what a learned prediction aimed for while plugged in, and judge it at unplug.
+    /// Follow a session held for a learned prediction, and judge it once it has ended.
     /// Every prediction is learned. A schedule only moves its deadline earlier.
-    fn track_accuracy(&mut self, d: &Decision, pred: Option<&Prediction>) -> Result<()> {
-        if let Some(at_unplug) = self
-            .store
-            .get(KV_PENDING_MISS)?
-            .and_then(|v| v.parse::<u8>().ok())
-        {
-            match self.last_capacity {
-                Some(c) if c + MISS_DRAIN_PCT <= at_unplug => {
-                    self.record_accuracy(false, at_unplug)?;
-                    self.store.set(KV_PENDING_MISS, "")?;
-                }
-                // Same 3-point jitter allowance as at unplug.
-                Some(c) if self.online() && c + 3 >= at_unplug => {
-                    tracing::info!(
-                        at_unplug,
-                        capacity = c,
-                        "recharged before the battery was used: not judged"
-                    );
-                    self.store.set(KV_PENDING_MISS, "")?;
-                }
-                _ => {}
-            }
+    fn track_accuracy(&mut self, d: &Decision, pred: Option<&Prediction>, now: Ts) -> Result<()> {
+        let mut held: Option<Held> = load_json(&self.store, KV_SESSION_TARGET)?;
+        let before = held.clone();
+        let gap = self.merge_gap_s;
+        if let Some(h) = held.take_if(|h| h.unplugged.is_some_and(|(at, _)| now - at > gap)) {
+            self.judge(&h)?;
         }
-        let held = matches!(d.state, State::Holding { .. } | State::ToppingOff { .. });
-        if held && pred.is_some() {
-            if self
-                .store
-                .get(KV_SESSION_TARGET)?
-                .as_deref()
-                .unwrap_or("")
-                .is_empty()
-            {
-                // The session should end at the top: that's what the prediction promised.
-                self.store
-                    .set(KV_SESSION_TARGET, &self.policy.top().end.to_string())?;
-            }
-        } else if d.state == State::Unplugged {
-            if let Some(target) = self
-                .store
-                .get(KV_SESSION_TARGET)?
-                .and_then(|v| v.parse::<u8>().ok())
-            {
-                // Within 3 points of the target counts as ready. Capacity readings jitter.
-                match self.last_capacity {
-                    Some(c) if c + 3 >= target => self.record_accuracy(true, target)?,
-                    // Short, but only a miss if it runs on battery before the next plug-in.
-                    Some(c) => self.store.set(KV_PENDING_MISS, &c.to_string())?,
-                    None => self.record_accuracy(false, target)?,
+        self.resolve_pending()?;
+        if self.online() {
+            if matches!(d.state, State::Override) || !self.in_control {
+                // The user overrode it, or pbcd isn't writing the limit: not a prediction outcome.
+                held = None;
+            } else {
+                let holding = matches!(d.state, State::Holding { .. } | State::ToppingOff { .. });
+                if held.is_none() && holding && pred.is_some() {
+                    held = Some(Held {
+                        // The session should end at the top: that's what the prediction promised.
+                        target: self.policy.top().end,
+                        since: now,
+                        from: self.last_capacity,
+                        limited: false,
+                        unplugged: None,
+                    });
                 }
-                self.store.set(KV_SESSION_TARGET, "")?;
+                if let Some(h) = held.as_mut() {
+                    // Replugged within the merge gap: the same session.
+                    h.unplugged = None;
+                    if d.target.end < h.target
+                        && self.last_capacity.is_some_and(|c| c + 1 >= d.target.end)
+                    {
+                        h.limited = true;
+                    }
+                }
             }
-        } else if matches!(d.state, State::Override) {
-            // The user overrode it. Not a prediction outcome.
-            self.store.set(KV_SESSION_TARGET, "")?;
+        } else if let Some(h) = held.as_mut().filter(|h| h.unplugged.is_none()) {
+            h.unplugged = Some((now, self.last_capacity));
+        }
+        if held != before {
+            let v = match &held {
+                Some(h) => serde_json::to_string(h)?,
+                None => String::new(),
+            };
+            self.store.set(KV_SESSION_TARGET, &v)?;
         }
         Ok(())
     }
 
-    fn record_accuracy(&mut self, reached: bool, target: u8) -> Result<()> {
+    /// A held session has ended. Ready is a hit. Short is a pending miss, but only if the
+    /// limit cost the charge: it stopped charging, and an unlimited charge would have made it.
+    fn judge(&mut self, h: &Held) -> Result<()> {
+        let Some((at, Some(cap))) = h.unplugged else {
+            return Ok(());
+        };
+        // Within 3 points of the target counts as ready. Capacity readings jitter.
+        let ready = h.target.saturating_sub(3);
+        if cap >= ready {
+            return self.record_accuracy(true);
+        }
+        let could = h
+            .from
+            .is_some_and(|f| self.charge.secs_to(f, ready) <= at - h.since);
+        if !h.limited || !could {
+            tracing::info!(
+                capacity = cap,
+                target = h.target,
+                limited = h.limited,
+                "unplugged short, but not for want of charging: not judged"
+            );
+            return Ok(());
+        }
+        let mut pending = self.pending_misses()?;
+        pending.push(cap);
+        self.store
+            .set(KV_PENDING_MISS, &serde_json::to_string(&pending)?)
+    }
+
+    fn pending_misses(&self) -> Result<Vec<u8>> {
+        Ok(load_json(&self.store, KV_PENDING_MISS)?.unwrap_or_default())
+    }
+
+    /// Each pending miss is a miss once the battery has run `MISS_DRAIN_PCT` below it, and
+    /// dropped once a plug-in charges back to it.
+    fn resolve_pending(&mut self) -> Result<()> {
+        let mut pending = self.pending_misses()?;
+        let Some(c) = self.last_capacity.filter(|_| !pending.is_empty()) else {
+            return Ok(());
+        };
+        let online = self.online();
+        let before = pending.len();
+        let mut misses = 0;
+        pending.retain(|&at| {
+            if c + MISS_DRAIN_PCT <= at {
+                misses += 1;
+                false
+            } else if online && c + 3 >= at {
+                tracing::info!(
+                    at_unplug = at,
+                    capacity = c,
+                    "recharged before the battery was used: not judged"
+                );
+                false
+            } else {
+                true
+            }
+        });
+        if misses == 0 && pending.len() == before {
+            return Ok(());
+        }
+        for _ in 0..misses {
+            self.record_accuracy(false)?;
+        }
+        self.store
+            .set(KV_PENDING_MISS, &serde_json::to_string(&pending)?)
+    }
+
+    fn record_accuracy(&mut self, reached: bool) -> Result<()> {
         self.accuracy.record(reached);
-        tracing::info!(reached, target, capacity = ?self.last_capacity, factor = self.accuracy.factor(), "learned prediction judged");
+        tracing::info!(reached, capacity = ?self.last_capacity, factor = self.accuracy.factor(), "learned prediction judged");
         self.store
             .set(KV_ACCURACY, &serde_json::to_string(&self.accuracy)?)
     }
@@ -877,24 +956,16 @@ mod tests {
         assert!(!c.override_requested);
     }
 
-    /// Held overnight from `NIGHT`, then unplugged at 60%, short of the top.
-    fn unplugged_short(c: &mut Core) -> Ts {
-        c.event(PowerEvent::Ac {
-            ts: NIGHT,
-            online: true,
-            capacity: Some(55),
-        })
-        .unwrap();
-        assert!(!c.decide(NIGHT + 60).unwrap().target.is_full());
-        let unplug = NIGHT + 3600;
-        c.event(PowerEvent::Ac {
-            ts: unplug,
-            online: false,
-            capacity: Some(60),
-        })
-        .unwrap();
-        c.decide(unplug).unwrap();
-        unplug
+    /// Plugged in at `NIGHT` at 55%, charged to the hold and held there for hours, then
+    /// unplugged at the hold, short of the top. Returns (unplug time, hold level).
+    fn unplugged_short(c: &mut Core) -> (Ts, u8) {
+        plugged(c, NIGHT, 55);
+        let hold = c.decide(NIGHT + 60).unwrap().target.end;
+        assert!(hold < 97, "{hold}");
+        plugged(c, NIGHT + 2 * 3600, hold);
+        let unplug = NIGHT + 4 * 3600;
+        on_battery(c, unplug, hold);
+        (unplug, hold)
     }
 
     fn on_battery(c: &mut Core, ts: Ts, capacity: u8) {
@@ -907,21 +978,6 @@ mod tests {
         c.decide(ts).unwrap();
     }
 
-    #[test]
-    fn short_unplug_is_a_miss_once_the_battery_is_used() {
-        let mut c = core();
-        let unplug = unplugged_short(&mut c);
-        assert_eq!(c.accuracy, Default::default(), "not judged at unplug");
-        on_battery(&mut c, unplug + 1800, 46);
-        assert_eq!(c.accuracy, Default::default(), "14 points: not yet");
-        on_battery(&mut c, unplug + 3600, 45);
-        assert_eq!(c.accuracy.misses, 1.0);
-        assert_eq!(c.accuracy.hits, 0.0);
-        // Judged once.
-        on_battery(&mut c, unplug + 7200, 20);
-        assert_eq!(c.accuracy.misses, 1.0);
-    }
-
     fn plugged(c: &mut Core, ts: Ts, capacity: u8) {
         c.event(PowerEvent::Ac {
             ts,
@@ -932,15 +988,39 @@ mod tests {
         c.decide(ts).unwrap();
     }
 
+    fn pending(c: &Core) -> Vec<u8> {
+        c.pending_misses().unwrap()
+    }
+
+    #[test]
+    fn short_unplug_is_a_miss_once_the_battery_is_used() {
+        let mut c = core();
+        let (unplug, hold) = unplugged_short(&mut c);
+        assert_eq!(c.accuracy, Default::default(), "not judged at unplug");
+        on_battery(&mut c, unplug + 1800, hold - 14);
+        assert_eq!(c.accuracy, Default::default(), "14 points: not yet");
+        on_battery(&mut c, unplug + 3600, hold - 15);
+        assert_eq!(c.accuracy.misses, 1.0);
+        assert_eq!(c.accuracy.hits, 0.0);
+        // Judged once.
+        on_battery(&mut c, unplug + 7200, 20);
+        assert_eq!(c.accuracy.misses, 1.0);
+    }
+
     #[test]
     fn short_unplug_then_charged_elsewhere_is_not_judged() {
         let mut c = core();
-        let unplug = unplugged_short(&mut c);
+        let (unplug, hold) = unplugged_short(&mut c);
         // Home, then onto the charger at work.
-        on_battery(&mut c, unplug + 1800, 55);
-        plugged(&mut c, unplug + 2400, 55);
-        assert!(!c.store.get(KV_PENDING_MISS).unwrap().unwrap().is_empty());
-        plugged(&mut c, unplug + 3600, 58);
+        on_battery(&mut c, unplug + 1800, hold - 5);
+        plugged(&mut c, unplug + 2400, hold - 5);
+        assert_eq!(
+            pending(&c),
+            vec![hold],
+            "plugging in alone doesn't clear it"
+        );
+        plugged(&mut c, unplug + 3600, hold - 2);
+        assert!(pending(&c).is_empty());
         // Back on battery and drained: the earlier unplug stays unjudged.
         on_battery(&mut c, unplug + 6 * 3600, 30);
         assert_eq!(c.accuracy, Default::default());
@@ -949,32 +1029,33 @@ mod tests {
     #[test]
     fn brief_top_up_does_not_clear_a_short_unplug() {
         let mut c = core();
-        let unplug = unplugged_short(&mut c);
-        on_battery(&mut c, unplug + 3600, 50);
-        // Ten minutes at a café: 50 to 53, not back to 60.
-        plugged(&mut c, unplug + 3600, 50);
-        plugged(&mut c, unplug + 4200, 53);
-        on_battery(&mut c, unplug + 4200, 53);
+        let (unplug, hold) = unplugged_short(&mut c);
+        on_battery(&mut c, unplug + 3600, hold - 10);
+        // Ten minutes at a café: up 3, not back to the hold.
+        plugged(&mut c, unplug + 3600, hold - 10);
+        plugged(&mut c, unplug + 4200, hold - 7);
+        on_battery(&mut c, unplug + 4200, hold - 7);
         // Net drain 14: not yet.
-        on_battery(&mut c, unplug + 3 * 3600, 46);
+        on_battery(&mut c, unplug + 3 * 3600, hold - 14);
         assert_eq!(c.accuracy, Default::default());
-        on_battery(&mut c, unplug + 4 * 3600, 45);
+        on_battery(&mut c, unplug + 4 * 3600, hold - 15);
         assert_eq!(c.accuracy.misses, 1.0);
     }
 
     #[test]
     fn drained_while_off_then_plugged_in_is_a_miss() {
         let mut c = core();
-        let unplug = unplugged_short(&mut c);
-        // The first reading after a day powered off is on the charger, at 40%.
-        plugged(&mut c, unplug + 10 * 3600, 40);
+        let (unplug, hold) = unplugged_short(&mut c);
+        // The first reading after a day powered off is on the charger, well down.
+        plugged(&mut c, unplug + 10 * 3600, hold - 30);
         assert_eq!(c.accuracy.misses, 1.0);
     }
 
     #[test]
     fn short_unplug_survives_a_restart() {
         let mut c = core();
-        let unplug = unplugged_short(&mut c);
+        let (unplug, hold) = unplugged_short(&mut c);
+        on_battery(&mut c, unplug + 1800, hold);
         let Core { store, .. } = c;
         let mut c = Core::new(
             store,
@@ -983,8 +1064,64 @@ mod tests {
             jiff::tz::TimeZone::UTC,
         )
         .unwrap();
-        on_battery(&mut c, unplug + 3600, 40);
+        on_battery(&mut c, unplug + 3600, hold - 20);
         assert_eq!(c.accuracy.misses, 1.0);
+    }
+
+    #[test]
+    fn unplug_below_the_hold_is_not_judged() {
+        let mut c = core();
+        plugged(&mut c, NIGHT, 30);
+        let hold = c.decide(NIGHT + 60).unwrap().target.end;
+        // Unplugged an hour later still charging, below the hold: the limit never stopped it.
+        on_battery(&mut c, NIGHT + 3600, hold - 10);
+        on_battery(&mut c, NIGHT + 6 * 3600, 10);
+        assert_eq!(c.accuracy, Default::default());
+        assert!(pending(&c).is_empty());
+    }
+
+    #[test]
+    fn unplug_too_soon_to_have_charged_is_not_judged() {
+        let mut c = core();
+        plugged(&mut c, NIGHT, 30);
+        let hold = c.decide(NIGHT + 60).unwrap().target.end;
+        // Unrealistically fast up to the hold, then unplugged: even unlimited, 30% to the top takes over an hour.
+        plugged(&mut c, NIGHT + 600, hold);
+        on_battery(&mut c, NIGHT + 1200, hold);
+        on_battery(&mut c, NIGHT + 6 * 3600, 10);
+        assert_eq!(c.accuracy, Default::default());
+    }
+
+    #[test]
+    fn hold_pbcd_did_not_write_is_not_judged() {
+        let mut c = core();
+        c.in_control = false;
+        plugged(&mut c, NIGHT, 55);
+        let hold = c.decide(NIGHT + 60).unwrap().target.end;
+        plugged(&mut c, NIGHT + 2 * 3600, hold);
+        on_battery(&mut c, NIGHT + 4 * 3600, hold);
+        on_battery(&mut c, NIGHT + 8 * 3600, 10);
+        assert_eq!(c.accuracy, Default::default());
+    }
+
+    #[test]
+    fn brief_unplug_is_the_same_session() {
+        let mut c = core();
+        plugged(&mut c, NIGHT, 55);
+        let hold = c.decide(NIGHT + 60).unwrap().target.end;
+        plugged(&mut c, NIGHT + 2 * 3600, hold);
+        // A cable knock at the hold: within the merge gap, so not a short unplug.
+        on_battery(&mut c, NIGHT + 3 * 3600, hold);
+        plugged(&mut c, NIGHT + 3 * 3600 + 60, hold);
+        assert!(pending(&c).is_empty());
+        // Topped off, unplugged in the morning, and again after a brief replug: one hit.
+        plugged(&mut c, NIGHT + 9 * 3600, 100);
+        on_battery(&mut c, NIGHT + 10 * 3600, 100);
+        plugged(&mut c, NIGHT + 10 * 3600 + 60, 100);
+        on_battery(&mut c, NIGHT + 10 * 3600 + 120, 100);
+        on_battery(&mut c, NIGHT + 11 * 3600, 95);
+        assert_eq!(c.accuracy.hits, 1.0);
+        assert_eq!(c.accuracy.misses, 0.0);
     }
 
     #[test]
