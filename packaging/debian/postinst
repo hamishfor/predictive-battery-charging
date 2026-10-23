@@ -5,8 +5,13 @@ if [ "$1" = configure ]; then
   # Pick up the new bus policy before the service claims its name.
   systemctl reload dbus 2>/dev/null || true
   systemctl enable pbcd.service || true
-  # Restart, so an upgrade runs the new daemon.
-  systemctl restart pbcd.service || true
-  echo "pbcd is running. Check your laptop with: pbcctl probe"
+  # Restart, so an upgrade runs the new daemon. Type=dbus: this returns once pbcd is on the bus, or failed.
+  if systemctl restart pbcd.service && systemctl is-active --quiet pbcd.service; then
+    echo "pbcd is running. Check your laptop with: pbcctl probe"
+  else
+    # Don't fail the install: the package is fine, and a fixed config or reboot recovers it.
+    echo "pbcd failed to start:" >&2
+    journalctl -u pbcd.service -n 15 -o cat --no-pager >&2 || true
+  fi
   echo "For the GNOME tile, log out and back in, then run: gnome-extensions enable predictive-battery-charging@pbc"
 fi
