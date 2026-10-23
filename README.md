@@ -159,6 +159,7 @@ Then run `sudo systemctl restart pbcd` or reboot.
 | `pbcctl set --start N --end N` | Write limits to every battery, or `--battery BAT1`. Values are checked against the profile. `--force` writes on a laptop with no profile, with generic checks. | sudo |
 | `pbcctl hold` | Write the profile's fixed hold, such as 75/80 | sudo |
 | `pbcctl full` | Write 0/100, normal charging to full | sudo |
+| `pbcctl max [N]` | Show or set `max_pct` (50 to 100) in pbcd's config, then restart pbcd. `--unset` removes the limit. `--no-restart` only edits the file. | sudo, to set |
 | `pbcctl log` | Print a CSV sample every 30 s (`--interval`), for measuring a charge curve. `--count N` stops after N samples. | |
 
 pbcd owns the limits while it runs in `control` mode. It reports a limit written by `set`, `hold` or `full` as overwritten, then writes its own back within a minute. To charge to full, use `charge-now`. To set limits by hand, stop pbcd first (`sudo systemctl stop pbcd`) or set `mode = "collect"`.
@@ -176,7 +177,7 @@ All settings live in `/etc/pbcd/config.toml`, with comments. Restart the daemon 
 | `[[schedule]]` | none | Optional "full by" times. A hold never runs past one. |
 | `hold_min`, `hold_max` | `70`, `99` | Range of the hold. Confident predictions hold low, weak ones high. |
 | `ready_pct` | `90` | The level it steps up to when an unplug may be near |
-| `max_pct` | `100` | Never charge past this. It replaces 100% as the final charge and caps the hold. **Charge to full** still goes to 100%, for that plug-in only. |
+| `max_pct` | `100` | Never charge past this. It replaces 100% as the final charge and caps the hold. **Charge to full** still goes to 100%, for that plug-in only. Also set with `sudo pbcctl max N`. |
 | `floor_pct` | `25` | Always charge below this level, whatever is learned or scheduled. On two-battery models it uses the combined charge. |
 | `quiet_wake` | `auto` | Brief wake during sleep to finish charging |
 | `upower_switch` | `true` | Use GNOME's Battery Charging setting as the on/off switch |

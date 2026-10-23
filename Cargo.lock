@@ -660,6 +660,7 @@ dependencies = [
  "pbc-hw",
  "pbc-model",
  "serde_json",
+ "toml",
 ]
 
 [[package]]

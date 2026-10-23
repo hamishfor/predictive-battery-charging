@@ -22,6 +22,7 @@
 
 # Never charge past this level. It replaces 100% as the final charge, and caps
 # the hold range. "Charge to full" still goes to 100%, for that plug-in only.
+# `sudo pbcctl max N` sets this line and restarts pbcd.
 # max_pct = 100
 
 # Always charge below this level.

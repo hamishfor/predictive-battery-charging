@@ -7,6 +7,7 @@ use std::path::PathBuf;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 mod bus;
+mod config;
 mod selftest;
 
 #[derive(Parser)]
@@ -95,6 +96,22 @@ enum Cmd {
         /// Talk to a development daemon on the session bus
         #[arg(long)]
         user: bool,
+    },
+    /// Show or set max_pct: the most pbcd charges to, except "charge to full".
+    /// Setting it edits pbcd's config and restarts pbcd (needs root)
+    Max {
+        /// 50 to 100. Omit to show the current value
+        #[arg(value_parser = clap::value_parser!(u8).range(50..=100))]
+        pct: Option<u8>,
+        /// Remove the limit (back to the default, 100)
+        #[arg(long, conflicts_with = "pct")]
+        unset: bool,
+        /// pbcd's config file
+        #[arg(long, default_value = "/etc/pbcd/config.toml")]
+        config: PathBuf,
+        /// Edit the file only. pbcd picks it up at its next restart
+        #[arg(long)]
+        no_restart: bool,
     },
     /// Charge to 100% this plug-in session, or the next one if on battery
     ChargeNow {
@@ -217,6 +234,56 @@ fn toml_generic_rules() -> pbc_hw::profile::ThresholdRules {
         min_gap: 1,
         persists_poweroff: false,
     }
+}
+
+fn max(path: &std::path::Path, pct: Option<u8>, unset: bool, no_restart: bool) -> Result<()> {
+    let text = match std::fs::read_to_string(path) {
+        Ok(t) => t,
+        // pbcd runs on defaults without a file. Setting a value creates one.
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(e) => return Err(e).with_context(|| format!("reading {}", path.display())),
+    };
+    let cur = config::get(&text).with_context(|| path.display().to_string())?;
+    if pct.is_none() && !unset {
+        match cur {
+            Some(v) => println!("max_pct = {v}"),
+            None => println!("max_pct = {} (default, no limit)", config::RANGE.end()),
+        }
+        return Ok(());
+    }
+    let want = pct.filter(|&v| v < *config::RANGE.end());
+    if want == cur {
+        println!(
+            "max_pct is already {}",
+            want.unwrap_or(*config::RANGE.end())
+        );
+        return Ok(());
+    }
+    let out = config::set(&text, want)?;
+    config::write(path, &out)?;
+    match want {
+        Some(v) => println!("max_pct = {v} in {}", path.display()),
+        None => println!("max_pct unset in {} (no limit)", path.display()),
+    }
+    let hold_min = config::hold_min(&out);
+    if let Some(v) = want.filter(|&v| v < hold_min) {
+        eprintln!("note: below hold_min ({hold_min}), so pbcd holds at {v}% throughout");
+    }
+    if no_restart {
+        println!("Restart pbcd to apply: sudo systemctl restart pbcd");
+        return Ok(());
+    }
+    // try-restart: leaves a stopped pbcd stopped.
+    let ok = std::process::Command::new("systemctl")
+        .args(["try-restart", "pbcd"])
+        .status()
+        .is_ok_and(|s| s.success());
+    if ok {
+        println!("pbcd restarted");
+    } else {
+        bail!("restarting pbcd failed. Run: sudo systemctl restart pbcd");
+    }
+    Ok(())
 }
 
 /// The root of a clone of this repository containing `dir`, if any.
@@ -399,6 +466,12 @@ fn main() -> Result<()> {
                 println!("{}", serde_json::to_string_pretty(&ss)?);
             }
         }
+        Cmd::Max {
+            pct,
+            unset,
+            config: path,
+            no_restart,
+        } => max(path, *pct, *unset, *no_restart)?,
         Cmd::ChargeNow { cancel, user } => {
             let on = if *cancel { "false" } else { "true" };
             bus::call(*user, "ChargeNow", &["b", on])?;
