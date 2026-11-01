@@ -64,7 +64,6 @@ Two options, either add the apt repo or download the Deb.
 #### Add the apt repository
 
 ```sh
-sudo install -d /etc/apt/keyrings
 sudo curl -fsSLo /etc/apt/keyrings/pbc.gpg https://hamishfor.github.io/predictive-battery-charging/pbc.gpg
 sudo curl -fsSLo /etc/apt/sources.list.d/pbc.sources https://hamishfor.github.io/predictive-battery-charging/pbc.sources
 sudo apt update
