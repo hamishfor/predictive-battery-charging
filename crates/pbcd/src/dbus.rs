@@ -121,6 +121,24 @@ impl Api {
         serde_json::to_string(&s).map_err(failed)
     }
 
+    /// Charge and plug state per hour for the last `hours` (max 720), oldest first, as JSON.
+    /// Gaps (asleep, off) are simulated from the plug state at each end and marked `estimated`.
+    async fn history_json(&self, hours: u32) -> zbus::fdo::Result<String> {
+        let hours = hours.clamp(1, 720);
+        let t = now();
+        let from = (t.div_euclid(crate::history::HOUR) - hours as i64 + 1) * crate::history::HOUR;
+        let core = self.ctl.core.lock().await;
+        let samples = core.store.samples_between(from, t).map_err(failed)?;
+        let before = core.store.last_capacity_before(from).map_err(failed)?;
+        let rates = crate::history::Rates {
+            drain_pct_per_h: pbc_model::drain::SleepDrain::rate(core.sleep_drain.as_ref()),
+            charge: core.charge.clone(),
+        };
+        drop(core);
+        let h = crate::history::hourly(before.as_ref(), &samples, t, hours, &rates);
+        serde_json::to_string(&h).map_err(failed)
+    }
+
     /// "Charge to full" (true), or cancel it (false). Plugged in, this session
     /// charges to 100%. On battery, the next plug-in does. Either way it ends
     /// when that plug-in session ends.

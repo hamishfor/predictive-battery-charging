@@ -17,6 +17,7 @@ pub const KV_LAST_SEEN: &str = "last_seen";
 pub const KV_CONTROL: &str = "control_state";
 pub const KV_OVERRIDE: &str = "override";
 pub const KV_CHARGE_MODEL: &str = "charge_model";
+pub const KV_SLEEP_DRAIN: &str = "sleep_drain";
 pub const KV_ACCURACY: &str = "prediction_accuracy";
 pub const KV_HAZARD_MODEL: &str = "hazard_model";
 pub const KV_BACKTEST: &str = "predictor_backtest";
@@ -59,6 +60,7 @@ pub struct Core {
     /// True once the requested full charge has been plugged in. It ends at the next unplug.
     override_used: bool,
     pub charge: ChargeModel,
+    pub sleep_drain: Option<pbc_model::drain::SleepDrain>,
     pub alerts: Vec<String>,
     /// Learned unplug-time predictor tunables.
     pub routine: pbc_model::learned::RoutineConfig,
@@ -108,6 +110,8 @@ pub struct Status {
     /// Which learned predictor is in use, "model" or "routine", and the last comparison.
     pub learned_predictor: &'static str,
     pub backtest: Option<pbc_model::hazard::Backtest>,
+    /// Measured drain while suspended on battery. None until a few long sleeps are seen.
+    pub sleep_drain: Option<pbc_model::drain::SleepDrain>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -156,6 +160,7 @@ impl Core {
         let control = load_json(&store, KV_CONTROL)?.unwrap_or(State::Unplugged);
         let override_requested = store.get(KV_OVERRIDE)?.as_deref() == Some("1");
         let charge = load_json(&store, KV_CHARGE_MODEL)?.unwrap_or_default();
+        let sleep_drain = load_json(&store, KV_SLEEP_DRAIN)?;
         let hazard = load_json(&store, KV_HAZARD_MODEL)?;
         let backtest = load_json(&store, KV_BACKTEST)?;
         let accuracy = load_json(&store, KV_ACCURACY)?.unwrap_or_default();
@@ -173,6 +178,7 @@ impl Core {
             // A restart while plugged in with an override counts as already used.
             override_used: override_requested && last_online == Some(true),
             charge,
+            sleep_drain,
             alerts: Vec::new(),
             routine: Default::default(),
             accuracy,
@@ -405,6 +411,17 @@ impl Core {
         Ok(n)
     }
 
+    /// Re-measure sleep drain from the last 90 days of suspends.
+    pub fn learn_sleep_drain(&mut self, now: Ts) -> Result<()> {
+        let d = pbc_model::drain::SleepDrain::learn(&self.store.events_since(now - 90 * 86400)?);
+        if d != self.sleep_drain {
+            self.store
+                .set(KV_SLEEP_DRAIN, &serde_json::to_string(&d)?)?;
+            self.sleep_drain = d;
+        }
+        Ok(())
+    }
+
     /// Record an event: append it to the log, update the builder, and store finished sessions.
     pub fn event(&mut self, ev: PowerEvent) -> Result<Vec<Session>> {
         self.store.append_event(&ev)?;
@@ -556,6 +573,7 @@ impl Core {
                 "routine"
             },
             backtest: self.backtest.clone(),
+            sleep_drain: self.sleep_drain.clone(),
         })
     }
 

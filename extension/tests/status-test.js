@@ -1,5 +1,5 @@
 // Run: gjs -m extension/tests/status-test.js
-import {batteryLabel, present, shortTime} from '../status.js';
+import {batteryLabel, chartLayout, hourLabel, present, shortTime} from '../status.js';
 import System from 'system';
 
 let failed = 0;
@@ -126,6 +126,27 @@ check('label fallback', batteryLabel({name: 'BAT2', label: null}) === 'BAT2', ba
 
 for (const st of [base, {...base, state: 'normal', prediction_source: null}, {...base, state: 'unplugged', plugged: false}, {...base, mode: 'collect'}])
     check(`short: ${st.state}/${st.mode}`, words(present(st, now)) <= 14, present(st, now));
+
+// 3 bars, 2px gaps, 34px wide: 10px bars at x 0, 12, 24.
+const hist = [
+    {capacity: 50, power: 'charging'},
+    {capacity: null, power: 'charging'},
+    {capacity: 0, power: 'held'},
+];
+let c = chartLayout(hist, 34, 40);
+check('chart bar width', c.barWidth === 10, c);
+check('chart skips missing hours', c.bars.length === 2 && c.bars[1].x === 24, c.bars);
+check('chart bar height', c.bars[0].h === 20 && c.bars[1].h === 5, c.bars);
+check('chart joins plug segments', c.segments.length === 2 && c.segments[0].x === 0 && c.segments[0].w === 22 &&
+    c.segments[1].power === 'held' && c.segments[1].x === 24, c.segments);
+c = chartLayout([{capacity: 80, power: 'held'}, {capacity: 80, power: null}, {capacity: 80, power: 'held'}], 32, 40);
+check('chart splits plug segments on battery', c.segments.length === 2, c.segments);
+
+const day = Array.from({length: 24}, (_, i) => ({ts: today23 - 86400 + 3600 + i * 3600, capacity: 50, power: null}));
+c = chartLayout(day, 24 * 10 + 23 * 2, 40);
+check('chart ticks every 6 hours', c.ticks.map(t => t.label).join(' ') === '00 06 12 18 00', c.ticks);
+check('chart ticks at boundaries', c.ticks[0].x === 0 && c.ticks[1].x === 71 && c.ticks[4].x === 286, c.ticks);
+check('hour label is 24h', hourLabel(today23) === '23', hourLabel(today23));
 
 print(failed ? `\n${failed} failed` : '\nall passed');
 System.exit(failed ? 1 : 0);

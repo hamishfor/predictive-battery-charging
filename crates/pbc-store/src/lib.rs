@@ -207,19 +207,21 @@ impl Store {
             "SELECT ts, online, status, capacity, energy_uwh, power_uw, th_start, th_end
              FROM samples WHERE ts >= ?1 AND ts <= ?2 ORDER BY ts",
         )?;
-        let rows = st.query_map([from, to], |r| {
-            Ok(Sample {
-                ts: r.get(0)?,
-                online: r.get(1)?,
-                status: r.get(2)?,
-                capacity: r.get(3)?,
-                energy_uwh: r.get::<_, Option<i64>>(4)?.map(|v| v as u64),
-                power_uw: r.get::<_, Option<i64>>(5)?.map(|v| v as u64),
-                th_start: r.get(6)?,
-                th_end: r.get(7)?,
-            })
-        })?;
+        let rows = st.query_map([from, to], sample_row)?;
         Ok(rows.collect::<Result<_, _>>()?)
+    }
+
+    /// The last sample before `ts` that has a capacity.
+    pub fn last_capacity_before(&self, ts: Ts) -> Result<Option<Sample>> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT ts, online, status, capacity, energy_uwh, power_uw, th_start, th_end
+                 FROM samples WHERE ts < ?1 AND capacity IS NOT NULL ORDER BY ts DESC LIMIT 1",
+                [ts],
+                sample_row,
+            )
+            .optional()?)
     }
 
     /// Delete samples older than `before`. Samples are high-volume. Events and sessions are kept.
@@ -287,6 +289,19 @@ impl Store {
         )?;
         Ok(())
     }
+}
+
+fn sample_row(r: &rusqlite::Row) -> rusqlite::Result<Sample> {
+    Ok(Sample {
+        ts: r.get(0)?,
+        online: r.get(1)?,
+        status: r.get(2)?,
+        capacity: r.get(3)?,
+        energy_uwh: r.get::<_, Option<i64>>(4)?.map(|v| v as u64),
+        power_uw: r.get::<_, Option<i64>>(5)?.map(|v| v as u64),
+        th_start: r.get(6)?,
+        th_end: r.get(7)?,
+    })
 }
 
 fn insert_session_tx(conn: &Connection, s: &Session) -> Result<i64> {
@@ -417,6 +432,8 @@ mod tests {
             .unwrap();
         }
         assert_eq!(s.samples_between(3, 5).unwrap().len(), 3);
+        assert_eq!(s.last_capacity_before(3).unwrap().map(|x| x.ts), Some(2));
+        assert_eq!(s.last_capacity_before(0).unwrap(), None);
         assert_eq!(s.prune_samples(5).unwrap(), 5);
         assert_eq!(s.samples_between(0, 100).unwrap().len(), 5);
         s.reset().unwrap();

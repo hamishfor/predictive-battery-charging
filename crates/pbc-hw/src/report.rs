@@ -64,6 +64,10 @@ pub struct Report {
     /// Self-check results, keyed by capability (`enforce`, `resume`, `persist`, `quiet_wake`).
     #[serde(default)]
     pub checks: BTreeMap<String, Check>,
+    /// Median battery drain while suspended, in %/h, as pbcd measured it. Mostly down to
+    /// `mem_sleep` (s2idle drains more than deep) and firmware.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sleep_drain_pct_per_h: Option<f64>,
     /// Free text: firmware quirks, what was seen or heard during the wake test.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub notes: String,
@@ -128,8 +132,8 @@ impl ModelFile {
     }
 
     /// Add a report. A report from the same machine type and BIOS replaces the
-    /// old one, but a check the new run left untested and the notes
-    /// keep the old value, so a quick re-run never discards a result.
+    /// old one, but a check the new run left untested, the notes
+    /// and sleep drain keep the old value, so a quick re-run never discards a result.
     pub fn merge(&mut self, mut new: Report, profile: Option<String>) {
         self.profile = profile;
         match self
@@ -146,6 +150,7 @@ impl ModelFile {
                 if new.notes.is_empty() {
                     new.notes = std::mem::take(&mut old.notes);
                 }
+                new.sleep_drain_pct_per_h = new.sleep_drain_pct_per_h.or(old.sleep_drain_pct_per_h);
                 *old = new;
             }
             None => self.reports.push(new),
@@ -249,6 +254,7 @@ pub fn collect(root: &SysRoot, profiles: &[Profile]) -> (ModelFile, Report) {
         batteries,
         other_supplies,
         checks: BTreeMap::new(),
+        sleep_drain_pct_per_h: None,
         notes: String::new(),
     };
     (file, report)
@@ -324,6 +330,7 @@ mod tests {
             batteries: BTreeMap::new(),
             other_supplies: BTreeMap::new(),
             checks: checks.iter().map(|(k, c)| (k.to_string(), *c)).collect(),
+            sleep_drain_pct_per_h: None,
             notes: String::new(),
         }
     }

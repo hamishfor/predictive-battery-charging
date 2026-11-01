@@ -175,3 +175,56 @@ export function present(st, now = new Date()) {
 export function batteryLabel(b) {
     return b.label || b.name;
 }
+
+/**
+ * A unix timestamp's local hour, as 24-hour "HH".
+ *
+ * @param {number} ts unix seconds
+ * @returns {string}
+ */
+export function hourLabel(ts) {
+    return String(new Date(ts * 1000).getHours()).padStart(2, '0');
+}
+
+/**
+ * Geometry for the charge history chart: a rounded-top bar per hour, under it
+ * a strip of segments for the hours spent plugged in, and time ticks on the
+ * hour boundaries: the start, then every `every` hours.
+ *
+ * @param {{ts: number, capacity: number|null, power: 'charging'|'held'|null}[]} hours HistoryJson, oldest first
+ * @param {number} width
+ * @param {number} barsHeight height of a 100% bar
+ * @param {number} gap between bars
+ * @param {number} every hours between ticks
+ * @returns {{barWidth: number, bars: {x: number, h: number}[],
+ *            segments: {x: number, w: number, power: string}[], ticks: {x: number, label: string}[]}}
+ */
+export function chartLayout(hours, width, barsHeight, gap = 2, every = 6) {
+    const n = hours.length;
+    const barWidth = n ? Math.max((width - (n - 1) * gap) / n, 0) : 0;
+    const x = i => i * (barWidth + gap);
+    const bars = [];
+    const segments = [];
+    hours.forEach((hr, i) => {
+        if (Number.isFinite(hr.capacity))
+            // At least a full rounded top, so a near-empty hour is still visible.
+            bars.push({x: x(i), h: Math.max(hr.capacity / 100 * barsHeight, barWidth / 2)});
+        const last = segments.at(-1);
+        if (!hr.power)
+            return;
+        // Consecutive hours in the same state join across the gap.
+        if (last && last.power === hr.power && last.end === i - 1) {
+            last.w = x(i) + barWidth - last.x;
+            last.end = i;
+        } else {
+            segments.push({x: x(i), w: barWidth, power: hr.power, end: i});
+        }
+    });
+    // A boundary sits mid-gap. The outer two are the chart's edges.
+    const ticks = [];
+    for (let i = 0; n && i <= n; i += every) {
+        const tx = i === 0 ? 0 : i === n ? width : x(i) - gap / 2;
+        ticks.push({x: tx, label: hourLabel(hours[0].ts + i * 3600)});
+    }
+    return {barWidth, bars, segments: segments.map(({end: _, ...s}) => s), ticks};
+}

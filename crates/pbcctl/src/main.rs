@@ -577,6 +577,9 @@ fn report(cli: &Cli, user_bus: bool, write: Option<&std::path::Path>) -> Result<
                 };
                 r.checks.insert(c.capability.key().into(), check);
             }
+            r.sleep_drain_pct_per_h = st["sleep_drain"]["pct_per_h"]
+                .as_f64()
+                .map(|v| (v * 100.0).round() / 100.0);
         }
         Err(e) => eprintln!("pbcd not reachable, so the report has no self-checks: {e:#}"),
     }

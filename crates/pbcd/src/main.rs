@@ -1,6 +1,7 @@
 mod actuator;
 mod config;
 mod dbus;
+mod history;
 mod hw;
 mod selfcheck;
 mod state;
@@ -361,6 +362,9 @@ async fn main() -> Result<()> {
             tracing::info!(levels = n, "charge model refined from history");
         }
     }
+    if let Err(e) = core.learn_sleep_drain(now()) {
+        tracing::warn!("measuring sleep drain: {e:#}");
+    }
 
     // Before anything writes thresholds: did the firmware keep the shutdown value?
     let found = actuator
@@ -515,6 +519,7 @@ async fn main() -> Result<()> {
                 if let Ok(n) = c.learn_charge(now()) {
                     if n > 0 { tracing::info!(levels = n, "charge model refined"); }
                 }
+                if let Err(e) = c.learn_sleep_drain(now()) { tracing::warn!("measuring sleep drain: {e:#}"); }
                 match c.retrain(now()) {
                     Ok(Some(b)) => tracing::info!(use_model = b.use_model, evaluated = b.evaluated, model_loss = b.model_loss, routine_loss = b.routine_loss, "unplug model retrained"),
                     Ok(None) => {}

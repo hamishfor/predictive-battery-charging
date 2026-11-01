@@ -7,12 +7,14 @@
 //!   bring a learned prediction's deadline forward.
 //! - [`control`] is the charge controller state machine.
 //! - [`charge`] estimates how long a top-off takes.
+//! - [`drain`] measures how fast the battery drains while suspended.
 //! - [`hazard`] is a trained unplug model, used when it beats [`learned`] on this laptop's history.
 //! - [`learned`] predicts unplug times and charge needs from history.
 //! - [`selfcheck`] records what this machine has shown it can do.
 
 pub mod charge;
 pub mod control;
+pub mod drain;
 pub mod hazard;
 pub mod learned;
 pub mod predict;
