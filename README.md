@@ -60,6 +60,20 @@ If your device is not on this list, `pbcd` begins by only recording charging act
 
 ### Ubuntu 26.04 and Debian
 
+Two options, either add the apt repo or download the Deb.
+#### Add the apt repository
+
+```sh
+sudo install -d /etc/apt/keyrings
+sudo curl -fsSLo /etc/apt/keyrings/pbc.gpg https://hamishfor.github.io/predictive-battery-charging/pbc.gpg
+sudo curl -fsSLo /etc/apt/sources.list.d/pbc.sources https://hamishfor.github.io/predictive-battery-charging/pbc.sources
+sudo apt update
+sudo apt install predictive-battery-charging
+```
+
+The repository is signed with key `44C6 255E 4334 E31E D498  BBBA 1B41 1FE2 C867 DDCB`.
+
+#### Direct download
 Download the `.deb` from the [latest release](https://github.com/hamishfor/predictive-battery-charging/releases/latest), then:
 
 ```sh
@@ -189,6 +203,7 @@ Both put the battery back to normal charging to 100%.
 
 ```sh
 sudo apt remove predictive-battery-charging   # or: sudo apt purge ..., to also delete settings and learned history
+sudo rm /etc/apt/sources.list.d/pbc.sources /etc/apt/keyrings/pbc.gpg   # if you added the apt repository
 ```
 
 From source:

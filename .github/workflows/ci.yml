@@ -108,6 +108,8 @@ jobs:
     runs-on: ubuntu-26.04
     permissions:
       contents: write
+    outputs:
+      release: ${{ steps.version.outputs.release }}
     steps:
       - uses: actions/checkout@v4
       - name: Read the version
@@ -138,3 +140,40 @@ jobs:
         run: |
           gh release create "$TAG" dist-out/*.deb dist-out/*.zip \
             --target "$GITHUB_SHA" --title "$TAG" --generate-notes $PRERELEASE
+
+  # Rebuild the apt repository on GitHub Pages from every non-pre-release .deb,
+  # so apt upgrade picks up the new release and older versions stay installable.
+  # Run from the Actions tab to republish without a new release.
+  apt-repo:
+    needs: release
+    if: needs.release.outputs.release == 'true' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-26.04
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install tools
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends apt-utils
+      - name: Download the released packages
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir debs
+          gh release list --exclude-drafts --exclude-pre-releases --limit 1000 --json tagName -q '.[].tagName' |
+            while read -r tag; do gh release download "$tag" -p '*.deb' -D debs; done
+      - name: Build the repository
+        env:
+          APT_SIGNING_KEY: ${{ secrets.APT_SIGNING_KEY }}
+        run: |
+          echo "$APT_SIGNING_KEY" | gpg --batch --import
+          packaging/build-apt-repo.sh debs apt-repo
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: apt-repo
+      - uses: actions/deploy-pages@v4
+        id: deploy
