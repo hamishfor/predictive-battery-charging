@@ -4,11 +4,15 @@
 [![Latest release](https://img.shields.io/github/v/release/hamishfor/predictive-battery-charging?include_prereleases)](https://github.com/hamishfor/predictive-battery-charging/releases/latest)
 [![License: GPL v3+](https://img.shields.io/badge/license-GPL--3.0--or--later-blue)](LICENSE)
 
+<img src="docs/gnome-extension-tile.png" alt="The Predictive Battery Charging tile in GNOME Quick Settings" width="280" align="right">
+
 Predictive Battery Charging (`PBC`) is a smart battery health management tool, at it's core, it tries to extend the health of you devices battery by reducing the amount of time it sits at 100% by using a statistical model based on your behaviour to try and predict when your laptop charges and when it requires battery. As you use your laptop it learns about your relationship with your laptops battery and uses that information to hold back charging your device to full during certain charging sessions.
 
 Currently, it's programmed to be what I'd describe as cautious. It will charge fully untill it reaches a degree of confidence around your schedule where it will start to hold your battery back, only finishing charging when it gets near to when it thinks you'll unplug.
 
 It runs as a small system daemon (`pbcd`), with an optional GNOME Shell extension to execute common battery management tasks and display information.
+
+<br clear="right">
 
 > [!IMPORTANT]
 > If your device is not in the [Supported hardware](#supported-hardware) table as `supported` you'll need to run the `pbcctl selftest` inorder to get the full use out of `pbcd`.
@@ -60,8 +64,9 @@ If your device is not on this list, `pbcd` begins by only recording charging act
 
 ### Ubuntu 26.04 and Debian
 
-Two options, either add the apt repo or download the Deb.
-#### Add the apt repository
+Three options, either add the apt repo, download the Deb, or build from source.
+
+#### Add the apt repository:
 
 ```sh
 sudo curl -fsSLo /etc/apt/keyrings/pbc.gpg https://hamishfor.github.io/predictive-battery-charging/pbc.gpg
@@ -72,7 +77,7 @@ sudo apt install predictive-battery-charging
 
 The repository is signed with key `44C6 255E 4334 E31E D498  BBBA 1B41 1FE2 C867 DDCB`.
 
-#### Direct download
+#### Direct download:
 Download the `.deb` from the [latest release](https://github.com/hamishfor/predictive-battery-charging/releases/latest), then:
 
 ```sh
@@ -87,7 +92,7 @@ gnome-extensions enable predictive-battery-charging@pbc
 
 The tile appears in **Quick Settings**, and takes control of the GNOME power **Preserve Battery Health** setting.
 
-### From source
+#### From source:
 
 Prerequisites:
 
