@@ -29,7 +29,8 @@ pub struct Hour {
     pub capacity: Option<u8>,
     /// No samples this hour. `capacity` and `power` are from simulating the gap.
     pub estimated: bool,
-    /// Plug state for most of the hour. None on battery.
+    /// Charging for at least a sixth of the hour, else held if plugged in for most of it.
+    /// None on battery.
     pub power: Option<Power>,
 }
 
@@ -78,7 +79,7 @@ pub fn hourly(
         counts[i][k] += 1;
     }
     for (h, c) in out.iter_mut().zip(&counts) {
-        h.power = majority(c);
+        h.power = plug_state(c);
     }
     let mut points = before
         .into_iter()
@@ -97,13 +98,15 @@ fn charging(s: &Sample) -> bool {
     s.status.as_deref() == Some("Charging")
 }
 
-/// From [charging, held, battery] counts.
-fn majority(c: &[u32; 3]) -> Option<Power> {
-    (c[0] + c[1] > c[2]).then_some(if c[0] >= c[1] {
-        Power::Charging
+/// From [charging, held, battery] counts. A top-off from a hold level takes 20-30 min,
+/// so charging wins from a sixth of the hour, or it would vanish into the hold around it.
+fn plug_state(c: &[u32; 3]) -> Option<Power> {
+    let total = c.iter().sum::<u32>();
+    if c[0] > 0 && c[0] * 6 >= total {
+        Some(Power::Charging)
     } else {
-        Power::Held
-    })
+        (c[0] + c[1] > c[2]).then_some(Power::Held)
+    }
 }
 
 /// Fill the empty hours strictly between consecutive samples `a` and `b`.
@@ -250,7 +253,7 @@ impl Path {
         self.levels[k.min(self.levels.len() - 1)]
     }
 
-    /// Majority plug state over the steps that start in `[h0, h1)`.
+    /// Plug state over the steps that start in `[h0, h1)`.
     fn power(&self, from: Ts, h0: Ts, h1: Ts) -> Option<Power> {
         let n = self.states.len();
         let k0 = (((h0 - from).max(0) / STEP) as usize).min(n);
@@ -263,7 +266,7 @@ impl Path {
                 State::Battery => 2,
             }] += 1;
         }
-        majority(&c)
+        plug_state(&c)
     }
 }
 
@@ -307,7 +310,7 @@ mod tests {
             s(5 * HOUR, true, "Charging", 1), // before the window
             s(8 * HOUR, false, "Discharging", 60),
             s(8 * HOUR + 60, false, "Discharging", 59),
-            s(9 * HOUR, true, "Charging", 50),
+            s(9 * HOUR, true, "NotCharging", 50),
             s(9 * HOUR + 60, true, "NotCharging", 80),
             s(9 * HOUR + 120, true, "NotCharging", 80),
             s(10 * HOUR, true, "Charging", 81),
@@ -325,9 +328,27 @@ mod tests {
     }
 
     #[test]
+    fn a_short_top_off_shows_as_charging() {
+        // As seen: 26 min charging 76% -> 95%, then 31 min held.
+        let mut samples: Vec<Sample> = (0..26)
+            .map(|m| s(m * 60, true, "Charging", 76 + (m * 19 / 26) as u8))
+            .collect();
+        samples.extend((26..57).map(|m| s(m * 60, true, "NotCharging", 95)));
+        assert_eq!(hours(&samples, 0, 1)[0].power, Some(Power::Charging));
+        // A few minutes of charging inside a hold doesn't.
+        samples[..5]
+            .iter_mut()
+            .for_each(|x| x.status = Some("Charging".into()));
+        samples[5..26]
+            .iter_mut()
+            .for_each(|x| x.status = Some("NotCharging".into()));
+        assert_eq!(hours(&samples, 0, 1)[0].power, Some(Power::Held));
+    }
+
+    #[test]
     fn plugged_for_a_minority_shows_battery() {
         let samples = vec![
-            s(0, true, "Charging", 50),
+            s(0, true, "NotCharging", 50),
             s(60, false, "Discharging", 50),
             s(120, false, "Discharging", 49),
         ];
@@ -421,8 +442,11 @@ mod tests {
         assert_eq!((h[1].capacity, h[1].power), (Some(80), Some(Power::Held)));
         assert_eq!((h[8].capacity, h[8].power), (Some(80), Some(Power::Held)));
         assert_eq!((h[10].capacity, h[10].power), (Some(80), Some(Power::Held)));
-        // The 22 min top-off is a minority of the last hour.
-        assert_eq!(h[11].capacity, Some(94));
+        // The 22 min top-off shows, though it's the lesser part of the last hour.
+        assert_eq!(
+            (h[11].capacity, h[11].power),
+            (Some(94), Some(Power::Charging))
+        );
     }
 
     #[test]
