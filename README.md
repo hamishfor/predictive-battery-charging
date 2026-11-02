@@ -192,7 +192,7 @@ All settings live in `/etc/pbcd/config.toml`, with comments. Restart the daemon 
 | Setting | Default | Purpose |
 |---|---|---|
 | `mode` | `control` | `collect` to only record, never limit |
-| `[[schedule]]` | none | Optional "full by" times. A hold never runs past one. |
+| `[[schedule]]` | none | Optional "full by" times. |
 | `hold_min`, `hold_max` | `70`, `99` | Range of the hold. Confident predictions hold low, weak ones high. |
 | `ready_pct` | `90` | The level it steps up to when an unplug may be near |
 | `max_pct` | `100` | Never charge past this. It replaces 100% as the final charge and caps the hold. **Charge to full** still goes to 100%, for that plug-in only. Also set with `sudo pbcctl max N`. |
