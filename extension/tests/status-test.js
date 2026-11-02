@@ -142,6 +142,17 @@ check('chart joins plug segments', c.segments.length === 2 && c.segments[0].x ==
 c = chartLayout([{capacity: 80, power: 'held'}, {capacity: 80, power: null}, {capacity: 80, power: 'held'}], 32, 40);
 check('chart splits plug segments on battery', c.segments.length === 2, c.segments);
 
+// Quarters: 12px bars, 3px each.
+c = chartLayout([
+    {capacity: 80, power: [null, 'held', 'charging', 'charging']},
+    {capacity: 80, power: ['charging', null, null, 'held']},
+], 26, 40);
+check('chart quarter segments', JSON.stringify(c.segments) === JSON.stringify([
+    {x: 3, w: 3, power: 'held'},
+    {x: 6, w: 11, power: 'charging'},
+    {x: 23, w: 3, power: 'held'},
+]), c.segments);
+
 const day = Array.from({length: 24}, (_, i) => ({ts: today23 - 86400 + 3600 + i * 3600, capacity: 50, power: null}));
 c = chartLayout(day, 24 * 10 + 23 * 2, 40);
 check('chart ticks every 6 hours', c.ticks.map(t => t.label).join(' ') === '00 06 12 18 00', c.ticks);

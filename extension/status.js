@@ -188,10 +188,11 @@ export function hourLabel(ts) {
 
 /**
  * Geometry for the charge history chart: a rounded-top bar per hour, under it
- * a strip of segments for the hours spent plugged in, and time ticks on the
- * hour boundaries: the start, then every `every` hours.
+ * a strip of segments for the time spent plugged in, and time ticks on the
+ * hour boundaries: the start, then every `every` hours. `power` is per quarter
+ * hour, or one value for the whole hour from older daemons.
  *
- * @param {{ts: number, capacity: number|null, power: 'charging'|'held'|null}[]} hours HistoryJson, oldest first
+ * @param {{ts: number, capacity: number|null, power: (string|null)[]|string|null}[]} hours HistoryJson, oldest first
  * @param {number} width
  * @param {number} barsHeight height of a 100% bar
  * @param {number} gap between bars
@@ -209,16 +210,22 @@ export function chartLayout(hours, width, barsHeight, gap = 2, every = 6) {
         if (Number.isFinite(hr.capacity))
             // At least a full rounded top, so a near-empty hour is still visible.
             bars.push({x: x(i), h: Math.max(hr.capacity / 100 * barsHeight, barWidth / 2)});
-        const last = segments.at(-1);
-        if (!hr.power)
-            return;
-        // Consecutive hours in the same state join across the gap.
-        if (last && last.power === hr.power && last.end === i - 1) {
-            last.w = x(i) + barWidth - last.x;
-            last.end = i;
-        } else {
-            segments.push({x: x(i), w: barWidth, power: hr.power, end: i});
-        }
+        // Each quarter is a quarter of the bar. Consecutive ones in the same state join,
+        // across the gap between bars too.
+        const parts = Array.isArray(hr.power) ? hr.power : [hr.power];
+        const pw = barWidth / parts.length;
+        parts.forEach((power, j) => {
+            if (!power)
+                return;
+            const px = x(i) + j * pw;
+            const at = i + j / parts.length;
+            const last = segments.at(-1);
+            if (last?.power === power && Math.abs(last.end - at) < 1e-9)
+                last.w = px + pw - last.x;
+            else
+                segments.push({x: px, w: pw, power});
+            segments.at(-1).end = at + 1 / parts.length;
+        });
     });
     // A boundary sits mid-gap. The outer two are the chart's edges.
     const ticks = [];

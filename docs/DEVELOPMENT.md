@@ -121,7 +121,7 @@ Service `org.pbc.Daemon1`, object `/org/pbc/Daemon1`, on the system bus.
 |---|---|
 | `StatusJson() → s` | Current state as JSON |
 | `SessionsJson(x since) → s` | Recorded plug-in sessions as JSON |
-| `HistoryJson(u hours) → s` | Last capacity and plug state (`charging`, `held`, or null) per hour, oldest first. Gaps (asleep, off) are simulated from the plug state either side, the sleep drain and the charge curve, and marked `estimated` |
+| `HistoryJson(u hours) → s` | Last capacity per hour, and plug state (`charging`, `held`, or null) per quarter hour, oldest first. Gaps (asleep, off) are simulated from the plug state either side, the sleep drain and the charge curve, and marked `estimated` |
 | `ChargeNow(b on)` | Charge to full (checked by polkit action `org.pbc.daemon1.charge-now`) |
 | `ConfirmCapability(s key, b working)` | Save a guided-test result. An empty key clears all (polkit action `org.pbc.daemon1.selftest`) |
 | `Changed` signal | Something the UI shows has changed |

@@ -6,6 +6,8 @@ use pbc_store::Sample;
 use serde::Serialize;
 
 pub const HOUR: Ts = 3600;
+/// The plug strip's resolution.
+const QUARTER: Ts = HOUR / 4;
 
 /// Resolution of the gap simulation. A step of charging is about 1%.
 const STEP: Ts = 60;
@@ -27,11 +29,11 @@ pub struct Hour {
     /// Last capacity seen in the hour, or estimated for the hour's end (see `estimated`).
     /// None only before the first sample.
     pub capacity: Option<u8>,
-    /// No samples this hour. `capacity` and `power` are from simulating the gap.
+    /// No samples this hour. `capacity` is from simulating the gap.
     pub estimated: bool,
-    /// Charging for at least a sixth of the hour, else held if plugged in for most of it.
-    /// None on battery.
-    pub power: Option<Power>,
+    /// Per quarter hour: charging if it charged at all, else held if plugged in for most
+    /// of it, else None (on battery). Simulated for quarters with no samples.
+    pub power: [Option<Power>; 4],
 }
 
 /// What the gap simulation assumes about this machine.
@@ -58,11 +60,11 @@ pub fn hourly(
             ts: first + i * HOUR,
             capacity: None,
             estimated: false,
-            power: None,
+            power: [None; 4],
         })
         .collect();
-    // [charging, held, battery] counts per hour.
-    let mut counts = vec![[0u32; 3]; out.len()];
+    // [charging, held, battery] counts per quarter hour.
+    let mut counts = vec![[0u32; 3]; out.len() * 4];
     for s in samples {
         if s.ts < first || s.ts >= last + HOUR {
             continue;
@@ -76,10 +78,10 @@ pub fn hourly(
             (true, true) => 0,
             (true, false) => 1,
         };
-        counts[i][k] += 1;
+        counts[((s.ts - first) / QUARTER) as usize][k] += 1;
     }
-    for (h, c) in out.iter_mut().zip(&counts) {
-        h.power = plug_state(c);
+    for (q, c) in counts.iter().enumerate() {
+        out[q / 4].power[q % 4] = plug_state(c);
     }
     let mut points = before
         .into_iter()
@@ -87,7 +89,7 @@ pub fn hourly(
         .filter(|s| s.capacity.is_some());
     if let Some(mut prev) = points.next() {
         for s in points {
-            fill(&mut out, first, prev, s, rates);
+            fill(&mut out, &counts, first, prev, s, rates);
             prev = s;
         }
     }
@@ -98,42 +100,49 @@ fn charging(s: &Sample) -> bool {
     s.status.as_deref() == Some("Charging")
 }
 
-/// From [charging, held, battery] counts. A top-off from a hold level takes 20-30 min,
-/// so charging wins from a sixth of the hour, or it would vanish into the hold around it.
+/// From [charging, held, battery] counts. Any charging shows, so a short top-off from a
+/// hold level doesn't vanish into the hold around it.
 fn plug_state(c: &[u32; 3]) -> Option<Power> {
-    let total = c.iter().sum::<u32>();
-    if c[0] > 0 && c[0] * 6 >= total {
+    if c[0] > 0 {
         Some(Power::Charging)
     } else {
-        (c[0] + c[1] > c[2]).then_some(Power::Held)
+        (c[1] > c[2]).then_some(Power::Held)
     }
 }
 
-/// Fill the empty hours strictly between consecutive samples `a` and `b`.
-fn fill(out: &mut [Hour], first: Ts, a: &Sample, b: &Sample, rates: &Rates) {
+/// Fill the empty hours and quarters strictly between consecutive samples `a` and `b`.
+fn fill(out: &mut [Hour], counts: &[[u32; 3]], first: Ts, a: &Sample, b: &Sample, rates: &Rates) {
     let (Some(ca), Some(cb)) = (a.capacity, b.capacity) else {
         return;
     };
-    let bucket = |t: Ts| (t - first).div_euclid(HOUR);
-    let lo = (bucket(a.ts) + 1).max(0);
-    let hi = bucket(b.ts).min(out.len() as Ts);
-    if hi <= lo {
+    let index = |t: Ts, len: Ts| (t - first).div_euclid(len);
+    let hours = (index(a.ts, HOUR) + 1).max(0)..index(b.ts, HOUR).min(out.len() as Ts);
+    let quarters = (index(a.ts, QUARTER) + 1).max(0)..index(b.ts, QUARTER).min(counts.len() as Ts);
+    if quarters.is_empty() {
         return;
     }
     let span = (b.ts - a.ts) as f64;
     let path = (b.ts - a.ts <= MAX_SIM_S).then(|| Path::best(a, b, rates));
-    for i in lo..hi {
+    for i in hours {
         let h = &mut out[i as usize];
         let end = h.ts + HOUR;
         let f = (end - a.ts) as f64 / span;
-        let (c, power) = match &path {
+        let c = match &path {
             // Spread the miss at `b` across the gap, so both ends meet the samples.
-            Some(p) => (p.at(a.ts, end) - p.miss * f, p.power(a.ts, h.ts, end)),
-            None => (ca as f64 + (cb as f64 - ca as f64) * f, None),
+            Some(p) => p.at(a.ts, end) - p.miss * f,
+            None => ca as f64 + (cb as f64 - ca as f64) * f,
         };
         h.capacity = Some(c.round().clamp(0.0, 100.0) as u8);
         h.estimated = true;
-        h.power = power;
+    }
+    for q in quarters {
+        // Samples without a capacity can still say what the plug was doing.
+        if counts[q as usize].iter().sum::<u32>() > 0 {
+            continue;
+        }
+        let q0 = first + q * QUARTER;
+        out[q as usize / 4].power[q as usize % 4] =
+            path.as_ref().and_then(|p| p.power(a.ts, q0, q0 + QUARTER));
     }
 }
 
@@ -299,60 +308,49 @@ mod tests {
         hourly(None, samples, now, n, &rates())
     }
 
-    fn caps(h: &[Hour]) -> Vec<(Option<u8>, Option<Power>)> {
-        h.iter().map(|h| (h.capacity, h.power)).collect()
+    fn caps(h: &[Hour]) -> Vec<Option<u8>> {
+        h.iter().map(|h| h.capacity).collect()
+    }
+
+    use Power::{Charging as C, Held as H};
+
+    /// Per-minute samples for one hour from 0, plugged state by minute.
+    fn minutes(state: impl Fn(Ts) -> Option<Power>) -> Vec<Sample> {
+        (0..60)
+            .map(|m| match state(m) {
+                None => s(m * 60, false, "Discharging", 50),
+                Some(C) => s(m * 60, true, "Charging", 50),
+                Some(H) => s(m * 60, true, "NotCharging", 50),
+            })
+            .collect()
     }
 
     #[test]
-    fn buckets_by_hour() {
-        let now = 10 * HOUR + 120;
-        let samples = vec![
-            s(5 * HOUR, true, "Charging", 1), // before the window
-            s(8 * HOUR, false, "Discharging", 60),
-            s(8 * HOUR + 60, false, "Discharging", 59),
-            s(9 * HOUR, true, "NotCharging", 50),
-            s(9 * HOUR + 60, true, "NotCharging", 80),
-            s(9 * HOUR + 120, true, "NotCharging", 80),
-            s(10 * HOUR, true, "Charging", 81),
-        ];
-        let h = hours(&samples, now, 4);
-        assert_eq!(h.len(), 4);
-        // Filled from the sample before the window.
-        assert!(h[0].estimated && h[0].capacity.is_some(), "{:?}", h[0]);
-        assert_eq!((h[1].capacity, h[1].power), (Some(59), None));
-        assert_eq!((h[2].capacity, h[2].power), (Some(80), Some(Power::Held)));
-        assert_eq!(
-            (h[3].capacity, h[3].power),
-            (Some(81), Some(Power::Charging))
-        );
+    fn plug_state_per_quarter() {
+        let samples = minutes(|m| match m {
+            0..15 | 45.. => None,
+            30 | 31 => Some(C), // any charging at all
+            _ => Some(H),
+        });
+        let h = hours(&samples, 0, 1);
+        assert_eq!(h[0].power, [None, Some(H), Some(C), None]);
+        assert_eq!(h[0].capacity, Some(50));
     }
 
     #[test]
     fn a_short_top_off_shows_as_charging() {
-        // As seen: 26 min charging 76% -> 95%, then 31 min held.
-        let mut samples: Vec<Sample> = (0..26)
-            .map(|m| s(m * 60, true, "Charging", 76 + (m * 19 / 26) as u8))
-            .collect();
-        samples.extend((26..57).map(|m| s(m * 60, true, "NotCharging", 95)));
-        assert_eq!(hours(&samples, 0, 1)[0].power, Some(Power::Charging));
-        // A few minutes of charging inside a hold doesn't.
-        samples[..5]
-            .iter_mut()
-            .for_each(|x| x.status = Some("Charging".into()));
-        samples[5..26]
-            .iter_mut()
-            .for_each(|x| x.status = Some("NotCharging".into()));
-        assert_eq!(hours(&samples, 0, 1)[0].power, Some(Power::Held));
+        // As seen: 26 min charging 76% -> 95%, then held.
+        let samples = minutes(|m| Some(if m < 26 { C } else { H }));
+        assert_eq!(
+            hours(&samples, 0, 1)[0].power,
+            [Some(C), Some(C), Some(H), Some(H)]
+        );
     }
 
     #[test]
     fn plugged_for_a_minority_shows_battery() {
-        let samples = vec![
-            s(0, true, "NotCharging", 50),
-            s(60, false, "Discharging", 50),
-            s(120, false, "Discharging", 49),
-        ];
-        assert_eq!(hours(&samples, 0, 1)[0].power, None);
+        let samples = minutes(|m| (m % 3 == 0).then_some(H));
+        assert_eq!(hours(&samples, 0, 1)[0].power, [None; 4]);
     }
 
     #[test]
@@ -365,16 +363,10 @@ mod tests {
         let h = hours(&samples, 5 * HOUR, 6);
         assert_eq!(
             caps(&h),
-            vec![
-                (None, None),
-                (Some(80), None),
-                (Some(78), None),
-                (Some(77), None),
-                (Some(76), None),
-                (Some(76), None),
-            ]
+            [None, Some(80), Some(78), Some(77), Some(76), Some(76)]
         );
         assert!(h[2].estimated && !h[5].estimated);
+        assert!(h.iter().all(|h| h.power == [None; 4]));
     }
 
     #[test]
@@ -382,10 +374,7 @@ mod tests {
         let before = s(0, false, "Discharging", 90);
         let samples = vec![s(10 * HOUR, false, "Discharging", 80)];
         let h = hourly(Some(&before), &samples, 10 * HOUR, 3, &rates());
-        assert_eq!(
-            caps(&h),
-            vec![(Some(81), None), (Some(80), None), (Some(80), None)]
-        );
+        assert_eq!(caps(&h), [Some(81), Some(80), Some(80)]);
     }
 
     #[test]
@@ -397,12 +386,10 @@ mod tests {
             s(6 * HOUR, true, "NotCharging", 80),
         ];
         let h = hours(&samples, 6 * HOUR, 7);
+        // The first quarter has the sample, on battery. The charging shows in the next.
+        assert_eq!(h[0].power, [None, Some(C), Some(H), Some(H)]);
         for x in &h[1..6] {
-            assert_eq!(
-                (x.capacity, x.power),
-                (Some(80), Some(Power::Held)),
-                "{x:?}"
-            );
+            assert_eq!((x.capacity, x.power), (Some(80), [Some(H); 4]), "{x:?}");
         }
     }
 
@@ -414,9 +401,9 @@ mod tests {
             s(4 * HOUR, true, "Charging", 80),
         ];
         let h = hours(&samples, 4 * HOUR, 5);
-        assert_eq!((h[1].capacity, h[1].power), (Some(19), None));
-        assert_eq!(h[2].power, None);
-        assert_eq!(h[3].power, Some(Power::Charging));
+        assert_eq!((h[1].capacity, h[1].power), (Some(19), [None; 4]));
+        assert_eq!(h[2].power, [None, None, None, Some(C)]);
+        assert_eq!(h[3].power, [Some(C); 4]);
         assert!(h[3].capacity.unwrap() > 70, "{:?}", h[3]);
     }
 
@@ -427,8 +414,8 @@ mod tests {
         a.th_end = Some(80);
         let samples = vec![a, s(8 * HOUR, false, "Discharging", 77)];
         let h = hours(&samples, 8 * HOUR, 9);
-        assert_eq!((h[2].capacity, h[2].power), (Some(80), Some(Power::Held)));
-        assert_eq!((h[6].capacity, h[6].power), (Some(78), None));
+        assert_eq!((h[2].capacity, h[2].power), (Some(80), [Some(H); 4]));
+        assert_eq!((h[6].capacity, h[6].power), (Some(78), [None; 4]));
     }
 
     #[test]
@@ -439,20 +426,19 @@ mod tests {
         a.th_end = Some(80);
         let samples = vec![a, s(12 * HOUR, false, "Discharging", 94)];
         let h = hours(&samples, 12 * HOUR, 13);
-        assert_eq!((h[1].capacity, h[1].power), (Some(80), Some(Power::Held)));
-        assert_eq!((h[8].capacity, h[8].power), (Some(80), Some(Power::Held)));
-        assert_eq!((h[10].capacity, h[10].power), (Some(80), Some(Power::Held)));
-        // The 22 min top-off shows, though it's the lesser part of the last hour.
+        assert_eq!((h[1].capacity, h[1].power), (Some(80), [Some(H); 4]));
+        assert_eq!((h[10].capacity, h[10].power), (Some(80), [Some(H); 4]));
+        // The 22 min top-off, from about 11:38.
         assert_eq!(
             (h[11].capacity, h[11].power),
-            (Some(94), Some(Power::Charging))
+            (Some(94), [Some(H), Some(H), Some(C), Some(C)])
         );
     }
 
     #[test]
     fn nothing_before_the_first_sample() {
         let h = hours(&[s(2 * HOUR, false, "Discharging", 50)], 2 * HOUR, 3);
-        assert_eq!(caps(&h)[..2], [(None, None), (None, None)]);
+        assert_eq!(caps(&h)[..2], [None, None]);
     }
 
     #[test]
@@ -464,7 +450,7 @@ mod tests {
         let h = hours(&samples, 10 * 86400, 3);
         assert_eq!(
             (h[1].capacity, h[1].power, h[1].estimated),
-            (Some(40), None, true)
+            (Some(40), [None; 4], true)
         );
     }
 }
