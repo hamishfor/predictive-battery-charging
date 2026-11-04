@@ -11,7 +11,7 @@
 
 use crate::predict::{Prediction, Predictor, Query};
 use crate::session::End;
-use crate::stats::{consistency, decay, local_minute, placeable, HOUR};
+use crate::stats::{blind, consistency, decay, local_minute, recent, HOUR};
 use crate::Ts;
 use serde::{Deserialize, Serialize};
 
@@ -32,6 +32,9 @@ pub struct RoutineConfig {
     pub min_session_h: f64,
     /// Ignore history older than this.
     pub max_age_days: i64,
+    /// A plug-in during sleep ends at some unseen time before the resume. Aim
+    /// to be full this long before the usual resume instead.
+    pub sleep_margin_min: i64,
 }
 
 impl Default for RoutineConfig {
@@ -46,6 +49,7 @@ impl Default for RoutineConfig {
             quantile: 0.2,
             min_session_h: 3.0,
             max_age_days: 180,
+            sleep_margin_min: 60,
         }
     }
 }
@@ -82,18 +86,29 @@ impl Routine {
         }
     }
 
-    fn similar(&self, q: &Query<'_>, start: Ts) -> Vec<Past> {
+    /// Past sessions like one starting at `start`. With `asleep`, only plug-ins
+    /// during sleep: those start at the suspend and end at the resume, the latest
+    /// the unplug could have been.
+    fn similar(&self, q: &Query<'_>, start: Ts, asleep: bool) -> Vec<Past> {
         let Some((m0, k0)) = local_minute(start, q.tz) else {
             return Vec::new();
         };
         q.history
             .iter()
-            .filter(|s| placeable(s, q.now, self.cfg.max_age_days))
+            .filter(|s| recent(s, q.now, self.cfg.max_age_days) && blind(&s.plugged) == asleep)
             .filter_map(|s| {
-                let st = s.plugged.mid();
+                let (st, dur) = if asleep {
+                    let end = match s.end {
+                        End::Unplugged(w) => w.hi,
+                        End::Censored(t) => t,
+                    };
+                    (s.plugged.lo, end - s.plugged.lo)
+                } else {
+                    (s.plugged.mid(), s.duration())
+                };
                 let (m, k) = local_minute(st, q.tz)?;
                 (k == k0 && minute_gap(m, m0) <= self.cfg.window_min).then(|| Past {
-                    dur: s.duration(),
+                    dur,
                     observed: matches!(s.end, End::Unplugged(_)),
                     weight: decay(q.now - st, self.cfg.half_life_days),
                 })
@@ -130,12 +145,22 @@ fn quantile(steps: &[(i64, f64)], q: f64) -> Option<i64> {
 impl Predictor for Routine {
     fn predict(&self, q: &Query<'_>) -> Option<Prediction> {
         let since = q.plugged_since?;
-        // A plug-in during sleep has no known start. Use the latest possible one: cautious.
-        let start = since.hi;
-        let sim = self.similar(q, start);
+        // During sleep: like past sleep sessions, placed at the suspend. Too few
+        // of those: like awake ones, from the latest possible start (cautious).
+        let mut asleep = q.asleep;
+        let mut sim = if asleep {
+            self.similar(q, since.lo, true)
+        } else {
+            Vec::new()
+        };
+        if sim.len() < self.cfg.min_similar {
+            asleep = false;
+            sim = self.similar(q, since.hi, false);
+        }
         if sim.len() < self.cfg.min_similar {
             return None;
         }
+        let start = if asleep { since.lo } else { since.hi };
         let long: Vec<Past> = sim
             .iter()
             .copied()
@@ -146,7 +171,12 @@ impl Predictor for Routine {
         if (dur as f64) < self.cfg.min_session_h * HOUR as f64 {
             return None; // This routine is short top-ups: nothing to gain by holding.
         }
-        let full_by = start + dur;
+        let margin = if asleep {
+            self.cfg.sleep_margin_min * 60
+        } else {
+            0
+        };
+        let full_by = start + dur - margin;
         if full_by <= q.now {
             return None; // Already past the cautious unplug time: charge.
         }
@@ -168,7 +198,11 @@ impl Predictor for Routine {
         Some(Prediction {
             full_by,
             confidence,
-            reason: format!("learned: {} similar sessions", sim.len()),
+            reason: format!(
+                "learned: {} similar {}sessions",
+                sim.len(),
+                if asleep { "sleep " } else { "" }
+            ),
             source: "learned",
         })
     }
@@ -261,6 +295,7 @@ mod tests {
         Query {
             now,
             plugged_since: Some(When::exact(since)),
+            asleep: false,
             capacity: Some(60),
             history: h,
             tz,
@@ -297,6 +332,73 @@ mod tests {
         assert!((7..=8).contains(&hh), "predicted unplug {hh}:{mm:02}");
         assert!(p.confidence >= 0.6, "confident: {}", p.confidence);
         assert_eq!(p.source, "learned");
+    }
+
+    /// Suspended on battery about 22:30, charger in and out while asleep, resumed about 08:45.
+    fn sleep_nights(days: &[i8]) -> Vec<Session> {
+        days.iter()
+            .enumerate()
+            .map(|(i, &d)| {
+                let w = When::between(at(d, 22, 20 + i as i8 * 3), at(d + 1, 8, 30 + i as i8 * 4));
+                Session {
+                    plugged: w,
+                    end: End::Unplugged(w),
+                    capacity_at_plug: Some(70),
+                    capacity_at_end: Some(90),
+                    merged_gaps: 0,
+                }
+            })
+            .collect()
+    }
+
+    #[test]
+    fn learns_overnight_charging_while_asleep() {
+        let tz = tz();
+        let mut h = sleep_nights(&[5, 6, 7, 8, 12, 13]);
+        // Short awake top-ups in the same evening window don't count against it.
+        h.extend([5, 6, 7, 8, 12, 13].map(|d| sess(at(d, 21, 0), at(d, 21, 40), 50, 70)));
+        h.sort_by_key(|s| s.plugged.lo);
+        let suspend = at(14, 22, 30); // Wed 14 Oct
+        let mut q = query(suspend, suspend, &h, &tz);
+        q.asleep = true;
+        let p = Routine::new(RoutineConfig::default(), 1.0)
+            .predict(&q)
+            .expect("prediction");
+        // The earliest resumes are about 08:30, less the hour's margin.
+        let (m, _) = local_minute(p.full_by, &tz).unwrap();
+        assert!(
+            (7 * 60 + 15..=7 * 60 + 45).contains(&m),
+            "full by {}:{:02}",
+            m / 60,
+            m % 60
+        );
+        assert!(p.confidence >= 0.6, "confident: {}", p.confidence);
+        assert!(p.reason.contains("sleep"), "{}", p.reason);
+        // The same plug-in awake has only the top-ups to go on.
+        assert!(Routine::new(RoutineConfig::default(), 1.0)
+            .predict(&query(suspend, suspend, &h, &tz))
+            .is_none());
+    }
+
+    #[test]
+    fn asleep_falls_back_to_awake_sessions() {
+        let tz = tz();
+        // Usually plugged in before sleep. Tonight it went in after.
+        let h = nights(&[5, 6, 7, 8, 12, 13, 14, 15]);
+        let suspend = at(19, 22, 5);
+        let mut q = query(suspend, suspend, &h, &tz);
+        q.asleep = true;
+        let p = Routine::new(RoutineConfig::default(), 1.0)
+            .predict(&q)
+            .expect("prediction");
+        let (m, _) = local_minute(p.full_by, &tz).unwrap();
+        assert!(
+            (7 * 60..8 * 60).contains(&m),
+            "no margin: {}:{:02}",
+            m / 60,
+            m % 60
+        );
+        assert!(!p.reason.contains("sleep"), "{}", p.reason);
     }
 
     #[test]

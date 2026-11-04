@@ -244,7 +244,11 @@ impl<'a> Hazard<'a> {
 
 impl Predictor for Hazard<'_> {
     fn predict(&self, q: &Query<'_>) -> Option<Prediction> {
-        if self.model.version != FEATURE_VERSION || self.model.sessions < self.cfg.min_sessions {
+        // Trained without plug-ins during sleep: leave those to `Routine`.
+        if q.asleep
+            || self.model.version != FEATURE_VERSION
+            || self.model.sessions < self.cfg.min_sessions
+        {
             return None;
         }
         let start = q.plugged_since?.hi;
@@ -350,6 +354,7 @@ pub fn backtest(
             let q = Query {
                 now: at,
                 plugged_since: Some(s.plugged),
+                asleep: false,
                 capacity: s.capacity_at_plug,
                 history: &past,
                 tz,
@@ -465,6 +470,7 @@ mod tests {
         let q = Query {
             now,
             plugged_since: Some(When::exact(start)),
+            asleep: false,
             capacity: Some(50),
             history: &h,
             tz: &tz(),
@@ -497,6 +503,7 @@ mod tests {
         let q = Query {
             now,
             plugged_since: Some(When::exact(at(9, 25, 12, 30))),
+            asleep: false,
             capacity: Some(50),
             history: &h,
             tz: &tz(),
@@ -525,6 +532,7 @@ mod tests {
         let q = Query {
             now: at(10, 19, 23, 0),
             plugged_since: Some(When::exact(at(10, 19, 22, 0))),
+            asleep: false,
             capacity: Some(50),
             history: &h,
             tz: &tz(),

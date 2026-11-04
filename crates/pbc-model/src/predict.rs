@@ -18,6 +18,9 @@ pub struct Query<'a> {
     pub now: Ts,
     /// Plug-in time of the current session, if plugged in.
     pub plugged_since: Option<When>,
+    /// The session was plugged in while asleep or off, or would be: the limit
+    /// left at suspend is for a plug-in pbcd won't see.
+    pub asleep: bool,
     pub capacity: Option<u8>,
     /// Finished sessions, oldest first. The schedule ignores this. A learned predictor uses it.
     pub history: &'a [Session],

@@ -111,6 +111,7 @@ fn query(now: i64, tz: &TimeZone) -> Query<'_> {
     Query {
         now,
         plugged_since: None,
+        asleep: false,
         capacity: Some(80),
         history: &[],
         tz,

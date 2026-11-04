@@ -58,6 +58,7 @@ fn main() {
             let q = Query {
                 now,
                 plugged_since: Some(When::exact(start)),
+                asleep: false,
                 capacity: Some(80),
                 history: &h,
                 tz: &tz,

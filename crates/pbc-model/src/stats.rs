@@ -1,6 +1,6 @@
 //! Helpers shared by the unplug predictors.
 
-use crate::session::Session;
+use crate::session::{Session, When};
 use crate::Ts;
 use jiff::civil::Weekday;
 use jiff::tz::TimeZone;
@@ -19,7 +19,17 @@ pub fn local_minute(ts: Ts, tz: &TimeZone) -> Option<(i64, bool)> {
 /// Usable as training data: plug-in known to within an hour (not during sleep),
 /// and within `max_age_days` of `now`.
 pub fn placeable(s: &Session, now: Ts, max_age_days: i64) -> bool {
-    s.plugged.hi - s.plugged.lo <= HOUR && now - s.plugged.lo <= max_age_days * DAY
+    !blind(&s.plugged) && recent(s, now, max_age_days)
+}
+
+/// Within `max_age_days` of `now`.
+pub fn recent(s: &Session, now: Ts, max_age_days: i64) -> bool {
+    now - s.plugged.lo <= max_age_days * DAY
+}
+
+/// Happened while asleep or off: only known to within more than an hour.
+pub fn blind(w: &When) -> bool {
+    w.hi - w.lo > HOUR
 }
 
 /// Recency weight: halves every `half_life_days`.

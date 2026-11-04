@@ -474,18 +474,22 @@ impl Core {
     }
 
     pub fn predict(&self, now: Ts) -> Result<Option<Prediction>> {
-        self.predict_from(now, self.builder.open_since())
+        let since = self.builder.open_since();
+        let asleep = since.as_ref().is_some_and(pbc_model::stats::blind);
+        self.predict_from(now, since, asleep)
     }
 
     fn predict_from(
         &self,
         now: Ts,
         plugged_since: Option<pbc_model::session::When>,
+        asleep: bool,
     ) -> Result<Option<Prediction>> {
         let history = self.store.sessions_since(now - HISTORY_S)?;
         let q = Query {
             now,
             plugged_since,
+            asleep,
             capacity: self.last_capacity,
             history: &history,
             tz: &self.tz,
@@ -510,8 +514,9 @@ impl Core {
     }
 
     /// As if the charger went in now: the limit an unseen plug-in starts at.
+    /// pbcd sees awake plug-ins, so the unseen one is during the coming sleep.
     fn predict_if_plugged_now(&self, now: Ts) -> Result<Option<Prediction>> {
-        self.predict_from(now, Some(pbc_model::session::When::exact(now)))
+        self.predict_from(now, Some(pbc_model::session::When::exact(now)), true)
     }
 
     /// The backtest picked the hazard model over `Routine`.
