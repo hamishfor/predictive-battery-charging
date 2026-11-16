@@ -6,7 +6,7 @@
 
 <img src="docs/gnome-extension-tile.png" alt="The Predictive Battery Charging tile in GNOME Quick Settings" width="320" align="right">
 
-Predictive Battery Charging (`PBC`) is a smart battery health management tool, at it's core, it tries to extend the health of you devices battery by reducing the amount of time it sits at 100% by using a statistical model based on your behaviour to try and predict when your laptop charges and when it requires battery. As you use your laptop it learns about your relationship with your laptops battery and uses that information to hold back charging your device to full during certain charging sessions.
+Predictive Battery Charging (`PBC`) is a smart battery health management tool, at its core, it tries to extend the health of you devices battery by reducing the amount of time it sits at 100% by using a statistical model based on your behaviour to try and predict when you charge your laptop and when you require battery. As you use your laptop it learns about your relationship with your laptops battery and uses that information to hold back charging your device to full during certain charging sessions.
 
 Currently, it's programmed to be what I'd describe as cautious. It will charge fully untill it reaches a degree of confidence around your schedule where it will start to hold your battery back, only finishing charging when it gets near to when it thinks you'll unplug.
 
@@ -27,7 +27,7 @@ It runs as a small system daemon (`pbcd`), with an optional GNOME Shell extensio
 
 ## Supported hardware
 
-Predictive Battery Charging works with laptops whose kernel driver exposes battery charge limits, and with working sleep profiles. If this project gains traction and contributions, then I'll move this to a separate versioned list, but for now this works. Most modern laptop devices _should_ work.
+PBC works with laptops whose kernel driver exposes battery charge limits, and with working sleep profiles. Eventually, I'll move this to a separate versioned list, but for now this works. Most modern laptop devices _should_ work.
 
 | Manufacturer | Family | Generation | Profile | Status |
 |---|---|---|---|---|
@@ -64,9 +64,9 @@ If your device is not on this list, `pbcd` begins by only recording charging act
 
 ### Ubuntu 26.04 and Debian
 
-Three options, either add the apt repo, download the Deb, or build from source.
+You have three options, either add the apt repo, download the Deb, or build from source.
 
-#### Add the apt repository:
+#### Options 1: Add the apt repository:
 
 ```sh
 sudo curl -fsSLo /etc/apt/keyrings/pbc.gpg https://hamishfor.github.io/predictive-battery-charging/pbc.gpg
@@ -77,22 +77,14 @@ sudo apt install predictive-battery-charging
 
 The repository is signed with key `44C6 255E 4334 E31E D498  BBBA 1B41 1FE2 C867 DDCB`.
 
-#### Direct download:
+#### Option 2: Direct download:
 Download the `.deb` from the [latest release](https://github.com/hamishfor/predictive-battery-charging/releases/latest), then:
 
 ```sh
 sudo apt install ./predictive-battery-charging_*_amd64.deb
 ```
 
-If you then want the Gnome extension; log out and back in, then turn on the tile.
-
-```sh
-gnome-extensions enable predictive-battery-charging@pbc
-```
-
-The tile appears in **Quick Settings**, and takes control of the GNOME power **Preserve Battery Health** setting.
-
-#### From source:
+#### Option 3: From source:
 
 Prerequisites:
 
@@ -139,48 +131,52 @@ pbcctl daemon
 
 To get full use of `pbcd` run the guided self test: `pbcctl selftest`, follow the instructions.
 
-PBC high-jacks Gnome's settings.
+If you then want the Gnome extension; log out and back in, then turn on the tile.
 
-In **Settings → Power → Battery Charging**, choose **Preserve Battery Health**. To disable `pbcd` you can select **Maximise Charge**.
+```sh
+gnome-extensions enable predictive-battery-charging@pbc
+```
+
+The tile appears in **Quick Settings**, and takes control of the GNOME power **Preserve Battery Health** setting. To turn on PBC, in **Settings → Power → Battery Charging**, choose **Preserve Battery Health**. To disable `pbcd` you can select **Maximise Charge**.
 
 | GNOME Settings | Predictive Battery Charging |
 |---|---|
 | Preserve Battery Health | On |
 | Maximize Charge | Off. Always charges to 100%. |
 
+To configure the daemon edit the config file, then restart the daemon.
 ```sh
 sudoedit /etc/pbcd/config.toml
 ```
 
+This is also shere you can add a schedule.
 ```toml
 [[schedule]]
 days = ["mon", "tue", "wed", "thu", "fri"]
 full_by = "08:00"
 ```
 
-Then run `sudo systemctl restart pbcd` or reboot.
-
 
 ## Command line
 
-`pbcctl` checks the laptop, shows what pbcd is doing, and can manually manage charge limits. `pbcctl <command> --help` lists each command's options.
+`pbcctl` is the PBC control tool, it's a small application to view information and set parameters for the daemon. `pbcctl <command> --help` lists each command's options.
 
-| Command | What it does | Needs |
-|---|---|---|
-| `pbcctl --version` | pbcctl's version and the running pbcd's. A build from source adds the git commit, such as `0.1.0 (git b288395)`. `--user` asks a development pbcd. | |
-| `pbcctl probe` | Laptop identity, the matched profile and its accepted limits, each battery, sleep states and RTC wake | |
-| `pbcctl status` | Each battery's charge, status, power and limits, plus the combined charge | |
-| `pbcctl daemon` | pbcd's full status as JSON: state, prediction, hold level, alerts, self-checks. `--sessions N` adds the last N days of plug-in sessions. | pbcd running |
-| `pbcctl charge-now` | Charge to 100% this plug-in, or the next one if on battery. `--cancel` goes back to predictive charging. | pbcd running |
-| `pbcctl report` | Hardware report as YAML, with the self-check results. `--write` saves it. See [Help support your laptop](#help-support-your-laptop). | |
-| `pbcctl selftest` | Guided checks, about 15 minutes. `--only enforce\|resume\|quiet_wake` runs one. `--reset` clears confirmed results. | sudo, pbcd running |
-| `pbcctl set --start N --end N` | Write limits to every battery, or `--battery BAT1`. Values are checked against the profile. `--force` writes on a laptop with no profile, with generic checks. | sudo |
-| `pbcctl hold` | Write the profile's fixed hold, such as 75/80 | sudo |
-| `pbcctl full` | Write 0/100, normal charging to full | sudo |
-| `pbcctl max [N]` | Show or set `max_pct` (50 to 100) in pbcd's config, then restart pbcd. `--unset` removes the limit. `--no-restart` only edits the file. | sudo, to set |
-| `pbcctl log` | Print a CSV sample every 30 s (`--interval`), for measuring a charge curve. `--count N` stops after N samples. | |
+| Command | Description |
+|---|---|
+| `pbcctl --version` | Version running. |
+| `pbcctl probe` | Returns information about the state of the device. Example: laptop identity, profile, limits, battery(s), sleep states, and RTC wake |
+| `pbcctl status` | Each battery's charge, status, power and limits. |
+| `pbcctl daemon` | pbcd's status history as a JSON object: state, prediction, hold level, alerts, self-checks. `--sessions N` adds the last N days of plug-in sessions. |
+| `pbcctl charge-now` | Will attempt to charge to 100%. If on battery it will schedule it for next plug in session. `--cancel` reverts. |
+| `pbcctl report` | Hardware report as YAML, including `selftest` results. `--write` to output to file. See [Help support your laptop](#help-support-your-laptop). |
+| `pbcctl selftest` | Guided device test, takes about 15 minutes. `--only enforce\|resume\|quiet_wake` to specify the test. `--reset` to clear. |
+| `pbcctl set --start N --end N` | Write limits to battery. `--battery BAT1` to specify a battery.  `--force` if you want to bypass safety checks and use a generic profile. Will be over written by `pbcd`. |
+| `pbcctl hold` | Dev only: Writes the profile's fixed hold to the EC. Will be over written by `pbcd`. |
+| `pbcctl full` | Write 0/100, normal charging to full. Will be over written by `pbcd`. |
+| `pbcctl max [N]` | Show or set `max_pct` (50 to 100) in pbcd's config, then restart pbcd. `--unset` removes the limit. `--no-restart` only edits the file. |
+| `pbcctl log` | Print a CSV sample every 30 s (`--interval`), for measuring a charge curve. `--count N` stops after N samples. |
 
-pbcd owns the limits while it runs in `control` mode. It reports a limit written by `set`, `hold` or `full` as overwritten, then writes its own back within a minute. To charge to full, use `charge-now`. To set limits by hand, stop pbcd first (`sudo systemctl stop pbcd`) or set `mode = "collect"`.
+`pbcd` owns the limits while it runs in `control` mode.  To charge to full, use `charge-now`. To set limits by hand, stop pbcd first (`sudo systemctl stop pbcd`) or set `mode = "collect"`.
 
 `set`, `hold` and `full` read every limit back after writing it, and fail if the firmware reports something else.
 
