@@ -28,6 +28,10 @@
 # Always charge below this level.
 # floor_pct = 25
 
+# How long a limit from `pbcctl set`, `hold` or `full` lasts: "cleared"
+# (until `pbcctl auto`) or "unplug" (until the end of that plug-in).
+# manual_limit = "cleared"
+
 ## Predictions
 
 # Ignore predictions below this confidence (0 to 1).

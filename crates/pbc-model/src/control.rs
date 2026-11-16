@@ -48,6 +48,9 @@ pub enum State {
     /// The user asked for a full charge, to 100% whatever `max_level` says. Lasts until the end of this plug-in
     /// session (requested on battery: until the end of the next one).
     Override,
+    /// A limit set by hand (`pbcctl set`, `hold`, `full`). Ignores predictions and
+    /// `max_level` until cleared, or until unplug if pbcd is configured that way.
+    Manual,
 }
 
 impl State {
@@ -58,6 +61,7 @@ impl State {
             State::Holding { .. } => "holding",
             State::ToppingOff { .. } => "topping_off",
             State::Override => "override",
+            State::Manual => "manual",
         }
     }
 }
@@ -124,6 +128,8 @@ pub struct Input<'a> {
     /// 100%. If on battery, the next plug-in does. The caller clears it when
     /// that plug-in session ends.
     pub override_requested: bool,
+    /// End of a limit set by hand. Wins over everything else, `max_level` included.
+    pub manual: Option<u8>,
     /// Seconds from the current capacity to `max_level`.
     pub secs_to_full: i64,
     /// Seconds from `ready_level` to `max_level`, for planning the final step.
@@ -144,6 +150,19 @@ pub fn decide(prev: &State, i: &Input<'_>, p: &Policy) -> Decision {
         target: Target { end: end.min(max) },
         reason,
     };
+
+    if let Some(end) = i.manual {
+        let (state, reason) = if i.online {
+            (State::Manual, format!("manual limit: {end}%"))
+        } else {
+            (State::Unplugged, format!("on battery: manual limit {end}%"))
+        };
+        return Decision {
+            state,
+            target: Target { end },
+            reason,
+        };
+    }
 
     if i.override_requested {
         // The only decision allowed past `max_level`. On battery: open the limit now, so

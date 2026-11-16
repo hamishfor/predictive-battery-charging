@@ -46,7 +46,7 @@ PBC works with laptops whose kernel driver exposes battery charge limits, and wi
 - **Expected to work:** the profile matches, and pbcd checks the laptop itself as you use it. Quiet wake disabled until `pbcctl selftest` is run.
 - **Unsupported:** tested as partial or no support, `pbcd` will only monitor.
 
-If your device is not on this list, `pbcd` begins by only recording charging activity, until you run `pbcctl selftest`. Check your laptop with `pbcctl probe` after installing. To help out the community, and get your laptop supported from the gun, see [Help support your laptop](#help-support-your-laptop).
+If your device is not on this list, `pbcd` begins by only recording charging activity, until you run `pbcctl selftest`. Check your laptop with `pbcctl probe` after installing. To help out the community, and get your laptop supported from the gun, see [Help support your laptop](https://github.com/hamishfor/predictive-battery-charging/blob/main/docs/DEVICE_SUPPORT.md).
 
 
 ## Requirements
@@ -66,7 +66,7 @@ If your device is not on this list, `pbcd` begins by only recording charging act
 
 You have three options, either add the apt repo, download the Deb, or build from source.
 
-#### Options 1: Add the apt repository:
+#### Option 1: Add the apt repository:
 
 ```sh
 sudo curl -fsSLo /etc/apt/keyrings/pbc.gpg https://hamishfor.github.io/predictive-battery-charging/pbc.gpg
@@ -170,20 +170,17 @@ full_by = "08:00"
 | `pbcctl charge-now` | Will attempt to charge to 100%. If on battery it will schedule it for next plug in session. `--cancel` reverts. |
 | `pbcctl report` | Hardware report as YAML, including `selftest` results. `--write` to output to file. See [Help support your laptop](#help-support-your-laptop). |
 | `pbcctl selftest` | Guided device test, takes about 15 minutes. `--only enforce\|resume\|quiet_wake` to specify the test. `--reset` to clear. |
-| `pbcctl set --start N --end N` | Write limits to battery. `--battery BAT1` to specify a battery.  `--force` if you want to bypass safety checks and use a generic profile. Will be over written by `pbcd`. |
-| `pbcctl hold` | Dev only: Writes the profile's fixed hold to the EC. Will be over written by `pbcd`. |
-| `pbcctl full` | Write 0/100, normal charging to full. Will be over written by `pbcd`. |
+| `pbcctl set --start N --end N` | WARNING: This effective disables predictive holding, `pbcctl auto` to reset. Have pbcd hold these limits instead of predicting. See [Setting limits by hand](#setting-limits-by-hand). |
+| `pbcctl hold` | WARNING: This effective disables predictive holding, `pbcctl auto` to reset. `set` with the profile's fixed hold, such as 75/80. |
+| `pbcctl full` | WARNING: This effective disables predictive holding, `pbcctl auto` to reset. `set` with 0/100, normal charging to full. |
+| `pbcctl auto` | Clear a limit from `set`, `hold` or `full`, and go back to predictive charging. |
 | `pbcctl max [N]` | Show or set `max_pct` (50 to 100) in pbcd's config, then restart pbcd. `--unset` removes the limit. `--no-restart` only edits the file. |
 | `pbcctl log` | Print a CSV sample every 30 s (`--interval`), for measuring a charge curve. `--count N` stops after N samples. |
-
-`pbcd` owns the limits while it runs in `control` mode.  To charge to full, use `charge-now`. To set limits by hand, stop pbcd first (`sudo systemctl stop pbcd`) or set `mode = "collect"`.
-
-`set`, `hold` and `full` read every limit back after writing it, and fail if the firmware reports something else.
 
 
 ## Configuration
 
-All settings live in `/etc/pbcd/config.toml`, with comments. Restart the daemon after changing any of them. The most useful ones:
+All settings live in `/etc/pbcd/config.toml`. Restart the daemon for changes to take effect.
 
 | Setting | Default | Purpose |
 |---|---|---|
@@ -191,6 +188,7 @@ All settings live in `/etc/pbcd/config.toml`, with comments. Restart the daemon 
 | `[[schedule]]` | none | Optional "full by" times. |
 | `hold_min`, `hold_max` | `70`, `99` | Range of the hold. Confident predictions hold low, weak ones high. |
 | `ready_pct` | `90` | The level it steps up to when an unplug may be near |
+| `manual_limit` | `cleared` | `cleared|unplug`, How long a limit from `set`, `hold` or `full` lasts: `cleared` (until `pbcctl auto`) or `unplug`. |
 | `max_pct` | `100` | Never charge past this. It replaces 100% as the final charge and caps the hold. **Charge to full** still goes to 100%, for that plug-in only. Also set with `sudo pbcctl max N`. |
 | `floor_pct` | `25` | Always charge below this level, whatever is learned or scheduled. On two-battery models it uses the combined charge. |
 | `quiet_wake` | `auto` | Brief wake during sleep to finish charging |
@@ -216,7 +214,7 @@ sudo dist/install.sh --uninstall     # add --purge to also delete learned histor
 
 ## Privacy
 
-Everything stays local on the laptop, in `/var/lib/pbcd/pbcd.db`. Unless you chose to contribute a profile here.
+PBC does not include telemetry.
 
 
 ## Status

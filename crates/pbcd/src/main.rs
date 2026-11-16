@@ -9,7 +9,7 @@ mod upower;
 
 use anyhow::{Context, Result};
 use clap::Parser;
-use config::{Mode, QuietWake, ShutdownValue};
+use config::{ManualLimit, Mode, QuietWake, ShutdownValue};
 use futures_util::StreamExt;
 use pbc_hw::sysfs::PSY;
 use pbc_hw::wakeplan;
@@ -146,7 +146,7 @@ impl Ctl {
 
 impl Ctl {
     /// Decide and apply. Returns the target that is now in force (if any).
-    async fn step(&self) -> Result<Option<Target>> {
+    pub(crate) async fn step(&self) -> Result<Option<Target>> {
         let r = self.step_inner().await;
         self.notify_changed().await;
         r
@@ -170,12 +170,14 @@ impl Ctl {
             return Ok(None);
         }
         let mut target = d.target;
+        let mut manual = self.core.lock().await.manual;
         if !selfcheck::limiting_allowed(&self.core.lock().await.store) {
-            // Charging didn't resume after a hold on this machine. Never hold it again.
-            // A fixed `max_pct` is never raised, so it stays.
+            // Charging didn't resume after a hold on this machine. Never hold it again,
+            // even by hand. A fixed `max_pct` is never raised, so it stays.
             let top = self.core.lock().await.policy.top();
             if target != Target::FULL {
                 target = top;
+                manual = None;
             }
         }
         let mut act = self.actuator.lock().await;
@@ -184,7 +186,11 @@ impl Ctl {
         };
         let online = self.core.lock().await.online();
         let before = a.current().map(|t| t.end);
-        match a.apply(target, now()) {
+        let r = match manual {
+            Some(t) => a.apply_manual(t, now()),
+            None => a.apply(target, now()),
+        };
+        match r {
             Ok(actuator::Outcome::Unchanged) => {}
             Ok(o) => {
                 tracing::info!(?o, reason = %d.reason, "thresholds");
@@ -329,6 +335,7 @@ async fn main() -> Result<()> {
     let store = Store::open(&cfg.db)?;
     let mut core = state::Core::new(store, scfg, schedule, tz)?;
     core.policy.min_confidence = cfg.min_confidence;
+    core.manual_until_unplug = cfg.manual_limit == ManualLimit::Unplug;
     core.policy.max_level = cfg.max_pct.clamp(50, 100);
     if cfg.max_pct < 50 {
         tracing::warn!(max_pct = cfg.max_pct, "max_pct below 50: using 50");
@@ -575,6 +582,10 @@ async fn before_sleep(ctl: &Ctl, cfg: &config::Config, quiet_wake: bool, hw: &hw
     if ctl.mode != Mode::Control || ctl.paused.lock().await.is_some() {
         return;
     }
+    if ctl.core.lock().await.manual.is_some() {
+        tracing::info!("manual limit: leaving it through sleep");
+        return;
+    }
     let (d, unplugged_topoff) = {
         let mut c = ctl.core.lock().await;
         match c.decide(now()) {
@@ -649,8 +660,13 @@ async fn before_shutdown(ctl: &Ctl, v: ShutdownValue) {
         },
         ShutdownValue::Full => ctl.core.lock().await.policy.top(),
     };
+    let manual = ctl.core.lock().await.manual;
     if let Some(a) = ctl.actuator.lock().await.as_mut() {
-        match a.apply(target, now()) {
+        let r = match manual {
+            Some(t) => a.apply_manual(t, now()),
+            None => a.apply(target, now()),
+        };
+        match r {
             Ok(o) => {
                 tracing::info!(?o, "shutdown thresholds");
                 if let Some(t) = a.current() {

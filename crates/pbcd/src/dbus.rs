@@ -1,11 +1,14 @@
 //! D-Bus API: `org.pbc.Daemon1` at `/org/pbc/Daemon1`.
 //!
 //! Read methods are open to everyone. Methods that change state check polkit
-//! (action `org.pbc.daemon1.charge-now`). By default the active local user is
-//! allowed without a password, matching UPower's charge-limit toggle.
+//! (`org.pbc.daemon1.charge-now`, `.set-limit`, `.selftest`). By default the active
+//! local user may charge to full or set a limit without a password, matching UPower's
+//! charge-limit toggle.
 
 use crate::config::Mode;
+use crate::selfcheck;
 use crate::{now, Ctl};
+use pbc_hw::thresholds::Thresholds;
 use std::collections::HashMap;
 use std::sync::Arc;
 use zbus::message::Header;
@@ -16,6 +19,7 @@ pub const NAME: &str = "org.pbc.Daemon1";
 pub const PATH: &str = "/org/pbc/Daemon1";
 pub const ACTION_CHARGE_NOW: &str = "org.pbc.daemon1.charge-now";
 pub const ACTION_SELFTEST: &str = "org.pbc.daemon1.selftest";
+pub const ACTION_SET_LIMIT: &str = "org.pbc.daemon1.set-limit";
 
 pub struct Api {
     pub ctl: Arc<Ctl>,
@@ -162,6 +166,53 @@ impl Api {
         Ok(())
     }
 
+    /// Set a limit by hand, replacing predictions (and cancelling "charge to full") until
+    /// `ClearLimit`, or until unplug with `manual_limit = "unplug"`. Returns the thresholds
+    /// now on the battery as "start/end", or "" while paused.
+    async fn set_limit(
+        &self,
+        start: u8,
+        end: u8,
+        #[zbus(header)] hdr: Header<'_>,
+        #[zbus(connection)] conn: &Connection,
+    ) -> zbus::fdo::Result<String> {
+        if self.polkit {
+            authorize(conn, &hdr, ACTION_SET_LIMIT).await?;
+        }
+        self.set_manual(Some(Thresholds { start, end })).await
+    }
+
+    /// `SetLimit` with the profile's fixed hold (`pbcctl hold`).
+    async fn hold_limit(
+        &self,
+        #[zbus(header)] hdr: Header<'_>,
+        #[zbus(connection)] conn: &Connection,
+    ) -> zbus::fdo::Result<String> {
+        if self.polkit {
+            authorize(conn, &hdr, ACTION_SET_LIMIT).await?;
+        }
+        let t = self
+            .ctl
+            .actuator
+            .lock()
+            .await
+            .as_ref()
+            .map(|a| a.hold_default());
+        self.set_manual(Some(t.ok_or_else(not_controlling)?)).await
+    }
+
+    /// Back to predictive charging.
+    async fn clear_limit(
+        &self,
+        #[zbus(header)] hdr: Header<'_>,
+        #[zbus(connection)] conn: &Connection,
+    ) -> zbus::fdo::Result<String> {
+        if self.polkit {
+            authorize(conn, &hdr, ACTION_SET_LIMIT).await?;
+        }
+        self.set_manual(None).await
+    }
+
     /// Record a result from `pbcctl selftest`. `capability` is a key such as
     /// "quiet_wake". `working` false records a confirmed failure. An empty
     /// capability with `working` false clears every confirmation.
@@ -225,6 +276,47 @@ impl Api {
     #[zbus(property)]
     async fn version(&self) -> String {
         env!("PBC_VERSION").into()
+    }
+}
+
+fn not_controlling() -> zbus::fdo::Error {
+    failed("pbcd is in collect mode, so it doesn't write limits")
+}
+
+impl Api {
+    async fn set_manual(&self, t: Option<Thresholds>) -> zbus::fdo::Result<String> {
+        if self.ctl.mode != Mode::Control {
+            return Err(not_controlling());
+        }
+        if let Some(t) = t {
+            let act = self.ctl.actuator.lock().await;
+            let a = act.as_ref().ok_or_else(not_controlling)?;
+            t.validate(a.rules())
+                .map_err(|e| zbus::fdo::Error::InvalidArgs(e.to_string()))?;
+            drop(act);
+            if t.end < 100 && !selfcheck::limiting_allowed(&self.ctl.core.lock().await.store) {
+                return Err(failed(
+                    "charging didn't resume after a hold on this laptop, so pbcd no longer limits it",
+                ));
+            }
+        }
+        self.ctl.core.lock().await.set_manual(t).map_err(failed)?;
+        tracing::info!(limit = ?t, "manual limit");
+        // Apply now rather than kick, so the caller sees the result.
+        self.ctl.step().await.map_err(failed)?;
+        if self.ctl.paused.lock().await.is_some() {
+            return Ok(String::new());
+        }
+        let cur = self
+            .ctl
+            .actuator
+            .lock()
+            .await
+            .as_ref()
+            .and_then(|a| a.current());
+        Ok(cur
+            .map(|t| format!("{}/{}", t.start, t.end))
+            .unwrap_or_default())
     }
 }
 

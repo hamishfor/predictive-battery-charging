@@ -69,6 +69,11 @@ check('normal charges to max_pct', v.subtitle.startsWith('Charging to 92%'), v.s
 v = present({...base, state: 'override', override_active: true, charge_to: 100, max_pct: 92}, now);
 check('override still says 100', v.subtitle.startsWith('Charging to 100%'), v.subtitle);
 
+v = present({...base, state: 'manual', charge_to: 60, manual: {start: 55, end: 60}, manual_until: 'cleared'}, now);
+check('manual', !v.checked && v.subtitle.startsWith('Limit 60%') && v.detail.some(d => d.includes('pbcctl auto')), v);
+v = present({...base, state: 'unplugged', plugged: false, manual: {start: 55, end: 60}}, now);
+check('manual on battery', v.headline.includes('next charge to 60%'), v.headline);
+
 v = present({...base, state: 'unplugged', plugged: false}, now);
 check('unplugged', v.subtitle.startsWith('On battery') && !v.subtitle.includes('100%'), v);
 check('unplugged can arm charge to full', v.canChargeNow && v.chargeNowLabel === 'Charge to full on next plug-in', v);

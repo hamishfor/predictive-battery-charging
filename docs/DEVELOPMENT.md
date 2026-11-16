@@ -58,7 +58,7 @@ Every command is listed in the README's [Command line](../README.md#command-line
 |---|---|---|
 | `--sysfs DIR` | all | Read and write a fake sysfs tree instead of `/sys`. `crates/pbc-hw/tests/fake_sysfs.rs` shows the layout. |
 | `--profiles DIR` | all | Load extra profile TOML files alongside the builtin ones, to try a new profile without rebuilding |
-| `--user` | `daemon`, `charge-now`, `report`, `selftest` | Talk to a development pbcd on the session bus (`pbcd --session-bus`) |
+| `--user` | `daemon`, `charge-now`, `set`, `hold`, `full`, `auto`, `report`, `selftest` | Talk to a development pbcd on the session bus (`pbcd --session-bus`) |
 
 pbcctl talks to pbcd through `busctl`, so it needs no D-Bus crate.
 

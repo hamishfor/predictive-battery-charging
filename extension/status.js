@@ -122,6 +122,10 @@ export function present(st, now = new Date()) {
             icon = 'battery-full-charging-symbolic';
             detail.push('Until you unplug');
             break;
+        case 'manual':
+            subtitle = withCap(`Limit ${limit}%`);
+            detail.push(st.manual_until === 'unplug' ? 'Set by hand · until you unplug' : 'Set by hand · pbcctl auto to resume');
+            break;
         case 'normal':
             subtitle = withCap(`Charging to ${max}%`);
             if (learning)
@@ -133,6 +137,8 @@ export function present(st, now = new Date()) {
             subtitle = withCap('On battery');
             if (st.override_active === true)
                 headline = `${subtitle} · next charge to 100%`;
+            else if (st.manual)
+                headline = `${subtitle} · next charge to ${st.manual.end}% (set by hand)`;
             else if (fullBy)
                 detail.push(`Next charge: full by ${shortTime(fullBy, now)}`);
             break;

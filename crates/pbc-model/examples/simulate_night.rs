@@ -69,6 +69,7 @@ fn main() {
                 online: true,
                 prediction: p.as_ref(),
                 override_requested: false,
+                manual: None,
                 secs_to_full: 40 * 60,
                 secs_ready_to_full: 25 * 60,
             };

@@ -36,6 +36,9 @@ pub struct Config {
     /// Never charge past this, except for "charge to full" (charge-now). Replaces 100%
     /// as the top-off and no-prediction level; holds are capped to it.
     pub max_pct: u8,
+    /// How long a limit set with `pbcctl set`, `hold` or `full` lasts: `cleared`
+    /// (until `pbcctl auto`) or `unplug` (to the end of its plug-in session).
+    pub manual_limit: ManualLimit,
     /// Ignore predictions below this confidence.
     pub min_confidence: f64,
     /// Start the top-off this many minutes earlier than the estimate.
@@ -75,6 +78,13 @@ pub enum QuietWake {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "lowercase")]
+pub enum ManualLimit {
+    Cleared,
+    Unplug,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum ShutdownValue {
     Hold,
     Full,
@@ -105,6 +115,7 @@ impl Default for Config {
             hold_max: 99,
             ready_pct: 90,
             max_pct: 100,
+            manual_limit: ManualLimit::Cleared,
             min_confidence: 0.3,
             margin_min: 15,
             quiet_wake: QuietWake::Auto,
@@ -200,6 +211,7 @@ mod tests {
             quiet_wake = "off"
             sleep_fallback = "hold"
             shutdown = "full"
+            manual_limit = "unplug"
             "#,
         )
         .unwrap();
@@ -208,6 +220,7 @@ mod tests {
         assert_eq!(c.quiet_wake, QuietWake::Off);
         assert_eq!(c.sleep_fallback, SleepFallback::Hold);
         assert_eq!(c.shutdown, ShutdownValue::Full);
+        assert_eq!(c.manual_limit, ManualLimit::Unplug);
     }
 
     #[test]

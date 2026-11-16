@@ -63,23 +63,38 @@ enum Cmd {
     },
     /// Show current battery and charger state
     Status,
-    /// Set charge thresholds (needs root)
+    /// Have pbcd hold these thresholds instead of predicting, until `pbcctl auto`
+    /// (or until unplug, with manual_limit = "unplug")
     Set {
         #[arg(long)]
         start: u8,
         #[arg(long)]
         end: u8,
-        /// Only this battery (default: all batteries)
+        /// With --direct: only this battery (default: all batteries)
         #[arg(long)]
         battery: Option<String>,
-        /// Allow writing on hardware with no matching profile
+        /// With --direct: allow writing on hardware with no matching profile
         #[arg(long)]
         force: bool,
+        #[command(flatten)]
+        via: Via,
     },
-    /// Hold at the profile's default ceiling
-    Hold,
-    /// Charge to 100% (firmware defaults)
-    Full,
+    /// `set` with the profile's fixed hold, such as 75/80
+    Hold {
+        #[command(flatten)]
+        via: Via,
+    },
+    /// `set` with 0/100: charge to 100%
+    Full {
+        #[command(flatten)]
+        via: Via,
+    },
+    /// Clear a limit from set, hold or full: back to Predictive Battery Charging
+    Auto {
+        /// Talk to a development daemon on the session bus
+        #[arg(long)]
+        user: bool,
+    },
     /// Log a CSV sample every INTERVAL seconds
     Log {
         #[arg(long, default_value_t = 30)]
@@ -122,6 +137,79 @@ enum Cmd {
         #[arg(long)]
         user: bool,
     },
+}
+
+#[derive(clap::Args)]
+struct Via {
+    /// Write the battery's sysfs files directly instead of asking pbcd (needs root).
+    /// pbcd, if running in control mode, writes its own limit back within a minute
+    #[arg(long, conflicts_with = "user")]
+    direct: bool,
+    /// Talk to a development daemon on the session bus
+    #[arg(long)]
+    user: bool,
+}
+
+/// Ask pbcd for a manual limit (`None`: the profile's hold) and report what the battery now has.
+fn set_via_pbcd(user: bool, t: Option<Thresholds>) -> Result<()> {
+    let (method, args) = match t {
+        Some(t) => (
+            "SetLimit",
+            vec!["yy".to_string(), t.start.to_string(), t.end.to_string()],
+        ),
+        None => ("HoldLimit", vec![]),
+    };
+    let args: Vec<&str> = args.iter().map(String::as_str).collect();
+    let got = bus::call(user, method, &args)
+        .map_err(|e| e.context("asking pbcd. --direct writes the battery yourself (needs root)"))?;
+    report_limit(user, t, &got)
+}
+
+fn report_limit(user: bool, want: Option<Thresholds>, got: &str) -> Result<()> {
+    let st = bus::status(user)?;
+    if let Some(why) = st["paused"].as_str() {
+        println!("saved, but pbcd is paused ({why}). It applies when pbcd resumes");
+        return Ok(());
+    }
+    let until = match st["manual_until"].as_str() {
+        Some("unplug") => "until unplug",
+        _ => "until `pbcctl auto`",
+    };
+    let Some(want) = want.or_else(|| {
+        let m = &st["manual"];
+        Some(Thresholds {
+            start: m["start"].as_u64()? as u8,
+            end: m["end"].as_u64()? as u8,
+        })
+    }) else {
+        bail!("pbcd reports no manual limit")
+    };
+    let want_s = format!("{}/{}", want.start, want.end);
+    if got == want_s {
+        println!("pbcd holds {want_s} {until}");
+    } else if got
+        .split_once('/')
+        .is_some_and(|(_, e)| e == want.end.to_string())
+    {
+        println!(
+            "pbcd holds {want_s} {until}. Below floor_pct, so the start is raised for now: {got}"
+        );
+    } else {
+        let alert = st["alerts"]
+            .as_array()
+            .and_then(|a| a.last())
+            .and_then(|a| a.as_str())
+            .unwrap_or("");
+        bail!(
+            "pbcd saved {want_s}, but the battery reports {}. {alert}",
+            if got.is_empty() {
+                "differing limits"
+            } else {
+                got
+            }
+        );
+    }
+    Ok(())
 }
 
 fn profiles(cli: &Cli) -> Result<Vec<Profile>> {
@@ -435,16 +523,22 @@ fn main() -> Result<()> {
             end,
             battery,
             force,
-        } => set(
-            &cli,
-            Thresholds {
+            via,
+        } => {
+            let t = Thresholds {
                 start: *start,
                 end: *end,
-            },
-            battery.as_deref(),
-            *force,
-        )?,
-        Cmd::Hold => {
+            };
+            if via.direct {
+                set(&cli, t, battery.as_deref(), *force)?
+            } else if battery.is_some() || *force {
+                bail!("--battery and --force need --direct: pbcd writes every battery, and only with a profile")
+            } else {
+                set_via_pbcd(via.user, Some(t))?
+            }
+        }
+        Cmd::Hold { via } if !via.direct => set_via_pbcd(via.user, None)?,
+        Cmd::Hold { .. } => {
             let ps = profiles(&cli)?;
             let p = Profile::detect(&ps, &DmiInfo::read(&root), &root)
                 .context("no matching profile")?;
@@ -454,7 +548,18 @@ fn main() -> Result<()> {
             };
             set(&cli, t, None, false)?
         }
-        Cmd::Full => set(&cli, Thresholds { start: 0, end: 100 }, None, false)?,
+        Cmd::Full { via } => {
+            let t = Thresholds { start: 0, end: 100 };
+            if via.direct {
+                set(&cli, t, None, false)?
+            } else {
+                set_via_pbcd(via.user, Some(t))?
+            }
+        }
+        Cmd::Auto { user } => {
+            bus::call(*user, "ClearLimit", &[])?;
+            println!("Predictive Battery Charging resumed");
+        }
         Cmd::Daemon { sessions, user } => {
             let call = |method: &str, extra: &[&str]| bus::call(*user, method, extra);
             let st: serde_json::Value = serde_json::from_str(&call("StatusJson", &[])?)?;

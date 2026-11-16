@@ -14,6 +14,16 @@
       <allow_active>yes</allow_active>
     </defaults>
   </action>
+  <action id="org.pbc.daemon1.set-limit">
+    <description>Set the battery charge limit</description>
+    <message>Authentication is required to set the charge limit</message>
+    <defaults>
+      <!-- As for charge-now. -->
+      <allow_any>auth_admin</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>yes</allow_active>
+    </defaults>
+  </action>
   <action id="org.pbc.daemon1.selftest">
     <description>Save Predictive Battery Charging self-test results</description>
     <message>Authentication is required to save self-test results</message>

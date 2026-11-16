@@ -2,6 +2,7 @@
 //! It is driven by plain method calls, so tests can run it without D-Bus or sysfs.
 
 use anyhow::Result;
+use pbc_hw::thresholds::Thresholds;
 use pbc_model::charge::{ChargeModel, ChargeSample};
 use pbc_model::control::{decide, Decision, Input, Policy, State, Target};
 use pbc_model::predict::{Prediction, Predictor, Query, Schedule, WithSchedule};
@@ -16,6 +17,8 @@ const HISTORY_S: Ts = 180 * 86400;
 pub const KV_LAST_SEEN: &str = "last_seen";
 pub const KV_CONTROL: &str = "control_state";
 pub const KV_OVERRIDE: &str = "override";
+/// A limit set by hand ([`Thresholds`] as JSON), empty when none.
+pub const KV_MANUAL: &str = "manual_limit";
 pub const KV_CHARGE_MODEL: &str = "charge_model";
 pub const KV_SLEEP_DRAIN: &str = "sleep_drain";
 pub const KV_ACCURACY: &str = "prediction_accuracy";
@@ -59,6 +62,11 @@ pub struct Core {
     pub override_requested: bool,
     /// True once the requested full charge has been plugged in. It ends at the next unplug.
     override_used: bool,
+    /// Limit set by hand. Exclusive with the override: setting one clears the other.
+    pub manual: Option<Thresholds>,
+    /// `manual_limit = "unplug"`: the manual limit ends with its plug-in session, like the override.
+    pub manual_until_unplug: bool,
+    manual_used: bool,
     pub charge: ChargeModel,
     pub sleep_drain: Option<pbc_model::drain::SleepDrain>,
     pub alerts: Vec<String>,
@@ -89,6 +97,9 @@ pub struct Status {
     pub target: Option<Target>,
     pub reason: Option<String>,
     pub override_active: bool,
+    /// Limit set by hand, and whether it ends at unplug ("unplug") or only when cleared ("cleared").
+    pub manual: Option<Thresholds>,
+    pub manual_until: &'static str,
     pub secs_to_full: Option<i64>,
     pub thresholds: Option<String>,
     pub alerts: Vec<String>,
@@ -159,6 +170,7 @@ impl Core {
         }
         let control = load_json(&store, KV_CONTROL)?.unwrap_or(State::Unplugged);
         let override_requested = store.get(KV_OVERRIDE)?.as_deref() == Some("1");
+        let manual: Option<Thresholds> = load_json(&store, KV_MANUAL)?;
         let charge = load_json(&store, KV_CHARGE_MODEL)?.unwrap_or_default();
         let sleep_drain = load_json(&store, KV_SLEEP_DRAIN)?;
         let hazard = load_json(&store, KV_HAZARD_MODEL)?;
@@ -177,6 +189,9 @@ impl Core {
             override_requested,
             // A restart while plugged in with an override counts as already used.
             override_used: override_requested && last_online == Some(true),
+            manual_used: manual.is_some() && last_online == Some(true),
+            manual,
+            manual_until_unplug: false,
             charge,
             sleep_drain,
             alerts: Vec::new(),
@@ -204,6 +219,14 @@ impl Core {
                 self.set_override(false)?;
             }
         }
+        if self.manual.is_some() && self.manual_until_unplug {
+            if self.online() {
+                self.manual_used = true;
+            } else if self.manual_used {
+                tracing::info!("unplugged: manual limit ends");
+                self.set_manual(None)?;
+            }
+        }
         let pred = if self.online() {
             self.predict(now)?
         } else {
@@ -214,6 +237,7 @@ impl Core {
             online: self.online(),
             prediction: pred.as_ref(),
             override_requested: self.override_requested,
+            manual: self.manual.map(|t| t.end),
             secs_to_full: self.secs_to_top(self.last_capacity.unwrap_or(0)),
             secs_ready_to_full: self.secs_to_top(self.policy.ready_level),
         };
@@ -246,7 +270,7 @@ impl Core {
         }
         self.resolve_pending()?;
         if self.online() {
-            if matches!(d.state, State::Override) || !self.in_control {
+            if matches!(d.state, State::Override | State::Manual) || !self.in_control {
                 // The user overrode it, or pbcd isn't writing the limit: not a prediction outcome.
                 held = None;
             } else {
@@ -360,10 +384,29 @@ impl Core {
     }
 
     pub fn set_override(&mut self, on: bool) -> Result<()> {
+        if on && self.manual.is_some() {
+            self.set_manual(None)?;
+        }
         self.override_requested = on;
         // A new request starts unused. Plugged in, the next decide() marks it used.
         self.override_used = false;
         self.store.set(KV_OVERRIDE, if on { "1" } else { "0" })?;
+        Ok(())
+    }
+
+    /// Set or clear the limit set by hand. Setting it cancels "charge to full".
+    pub fn set_manual(&mut self, t: Option<Thresholds>) -> Result<()> {
+        if t.is_some() && self.override_requested {
+            self.set_override(false)?;
+        }
+        self.manual = t;
+        // As for the override: plugged in, the next decide() marks it used.
+        self.manual_used = false;
+        let v = match t {
+            Some(t) => serde_json::to_string(&t)?,
+            None => String::new(),
+        };
+        self.store.set(KV_MANUAL, &v)?;
         Ok(())
     }
 
@@ -562,6 +605,12 @@ impl Core {
             target: self.last_decision.as_ref().map(|d| d.target),
             reason: self.last_decision.as_ref().map(|d| d.reason.clone()),
             override_active: self.override_requested,
+            manual: self.manual,
+            manual_until: if self.manual_until_unplug {
+                "unplug"
+            } else {
+                "cleared"
+            },
             secs_to_full: self.last_capacity.map(|c| self.secs_to_top(c)),
             max_pct: self.policy.top().end,
             thresholds: None,
@@ -1197,6 +1246,49 @@ mod tests {
         c.set_override(true).unwrap();
         c.set_override(false).unwrap();
         assert!(!c.decide(NIGHT).unwrap().target.is_full());
+    }
+
+    const T60: Thresholds = Thresholds { start: 55, end: 60 };
+
+    #[test]
+    fn manual_stays_until_cleared() {
+        let mut c = core();
+        plugged(&mut c, NIGHT, 40);
+        c.set_override(true).unwrap();
+        c.set_manual(Some(T60)).unwrap();
+        assert!(!c.override_requested, "a manual limit cancels charge-now");
+        let d = c.decide(NIGHT + 60).unwrap();
+        assert_eq!((d.state, d.target.end), (State::Manual, 60));
+        on_battery(&mut c, NIGHT + 3600, 60);
+        assert_eq!(c.decide(NIGHT + 3600).unwrap().target.end, 60);
+        assert_eq!(c.manual, Some(T60), "kept past unplug");
+        // Survives a restart.
+        let c2 = Core::new(
+            std::mem::replace(&mut c.store, Store::open_in_memory().unwrap()),
+            SessionConfig { merge_gap_s: 300 },
+            Schedule::new(&[]).unwrap(),
+            jiff::tz::TimeZone::UTC,
+        )
+        .unwrap();
+        assert_eq!(c2.manual, Some(T60));
+        c.set_override(true).unwrap();
+        assert_eq!(c.manual, None, "charge-now cancels a manual limit");
+    }
+
+    #[test]
+    fn manual_until_unplug() {
+        let mut c = core();
+        c.manual_until_unplug = true;
+        on_battery(&mut c, NIGHT - 120, 40);
+        c.set_manual(Some(T60)).unwrap();
+        // Set on battery: waits for the next plug-in, like charge-now.
+        assert_eq!(c.decide(NIGHT - 60).unwrap().target.end, 60);
+        plugged(&mut c, NIGHT, 40);
+        assert_eq!(c.decide(NIGHT).unwrap().state, State::Manual);
+        on_battery(&mut c, NIGHT + 3600, 60);
+        let d = c.decide(NIGHT + 3600).unwrap();
+        assert_eq!(c.manual, None);
+        assert_ne!(d.target.end, 60);
     }
 
     #[test]

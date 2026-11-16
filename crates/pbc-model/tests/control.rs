@@ -17,6 +17,7 @@ fn input<'a>(now: i64, online: bool, p: Option<&'a Prediction>) -> Input<'a> {
         online,
         prediction: p,
         override_requested: false,
+        manual: None,
         secs_to_full: 40 * 60,
         secs_ready_to_full: 25 * 60,
     }
@@ -135,6 +136,30 @@ fn override_armed_on_battery_opens_the_limit() {
     i.override_requested = true;
     let d = decide(&State::Unplugged, &i, &Policy::default());
     assert_eq!((d.state.clone(), end(&d)), (State::Unplugged, 100));
+}
+
+#[test]
+fn manual_ignores_prediction_and_max_level() {
+    let pol = Policy {
+        max_level: 90,
+        ..Policy::default()
+    };
+    let p = pred(10 * H, 1.0);
+    let mut i = input(9 * H + 50 * 60, true, Some(&p));
+    i.manual = Some(100);
+    let d = decide(&State::ToppingOff { full_by: 10 * H }, &i, &pol);
+    assert_eq!((d.state.clone(), end(&d)), (State::Manual, 100));
+    i.manual = Some(60);
+    i.online = false;
+    let d = decide(&State::Manual, &i, &pol);
+    assert_eq!((d.state.clone(), end(&d)), (State::Unplugged, 60));
+    // No sleep action: the limit stays as set.
+    i.online = true;
+    let d = decide(&State::Unplugged, &i, &pol);
+    assert_eq!(
+        plan_sleep(&d, 0, true, 30 * 60, SleepFallback::Full, None),
+        SleepAction::Nothing
+    );
 }
 
 #[test]

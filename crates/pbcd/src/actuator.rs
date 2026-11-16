@@ -3,6 +3,7 @@
 //! Safety rules:
 //! - Never write on hardware without a matching profile (fail closed).
 //! - Below the floor (default 25%), always charge (to `max_pct`), whatever the controller says.
+//!   A limit set by hand keeps its end, but its start is raised so charging begins.
 //! - Read back after every write. If the firmware disagrees, report an error and don't retry in a tight loop.
 //! - After switching to Full while on AC and below the ceiling, check that charging actually starts.
 //!
@@ -16,6 +17,7 @@
 //! - Batteries are re-discovered on every call, so hot-swapping BAT1 is handled.
 //!   A newly inserted battery gets the current target on the next sample.
 
+use pbc_hw::profile::ThresholdRules;
 use pbc_hw::thresholds::{apply, Thresholds};
 use pbc_hw::{combine, Battery, BatteryStatus, PowerSnapshot, Profile, SysRoot};
 use pbc_model::control::Target;
@@ -110,6 +112,19 @@ impl Actuator {
         Thresholds { start, end }
     }
 
+    pub fn rules(&self) -> &ThresholdRules {
+        &self.profile.thresholds
+    }
+
+    /// The profile's fixed hold, for `pbcctl hold`.
+    pub fn hold_default(&self) -> Thresholds {
+        let d = &self.profile.defaults;
+        Thresholds {
+            start: d.hold_start,
+            end: d.hold_end,
+        }
+    }
+
     /// Thresholds shared by every controllable battery, or None if they differ (or there are none).
     pub fn current(&self) -> Option<Thresholds> {
         let all: Vec<Option<Thresholds>> =
@@ -139,6 +154,41 @@ impl Actuator {
         if floored {
             want = ceiling;
         }
+        self.write(&bats, combined, want, floored, now)
+    }
+
+    /// As `apply`, for a limit set by hand: these exact thresholds, unless below the
+    /// floor with charging not due, where the start is raised to the floor.
+    pub fn apply_manual(&mut self, t: Thresholds, now: i64) -> anyhow::Result<Outcome> {
+        let bats = self.batteries();
+        let combined = self.combined(&bats);
+        let r = &self.profile.thresholds;
+        let mut want = t;
+        let floored = combined
+            .capacity_pct
+            .is_some_and(|c| c < self.floor_pct && c >= t.start);
+        if floored {
+            want = if t.end > self.floor_pct {
+                let start = self
+                    .floor_pct
+                    .min(t.end.saturating_sub(r.min_gap))
+                    .clamp(r.start_min, r.start_max);
+                Thresholds { start, end: t.end }
+            } else {
+                self.thresholds_for(Target { end: self.max_pct })
+            };
+        }
+        self.write(&bats, combined, want, floored, now)
+    }
+
+    fn write(
+        &mut self,
+        bats: &[Battery],
+        combined: PowerSnapshot,
+        want: Thresholds,
+        floored: bool,
+        now: i64,
+    ) -> anyhow::Result<Outcome> {
         // Forget batteries that are gone (BAT1 removed).
         self.last_written
             .retain(|name, _| bats.iter().any(|b| &b.name == name));
@@ -146,7 +196,7 @@ impl Actuator {
         let cur_end = bats.first().and_then(|b| b.thresholds()).map(|t| t.end);
         let mut outcome = Outcome::Unchanged;
         let mut first_err: Option<anyhow::Error> = None;
-        for b in &bats {
+        for b in bats {
             let cur = b.thresholds();
             if cur == Some(want) {
                 self.last_written.insert(b.name.clone(), want);
@@ -314,6 +364,30 @@ mod tests {
         );
         assert_eq!(a.apply(H80, 0).unwrap(), Outcome::Floor { to: FULL });
         assert_eq!(a.current(), Some(FULL));
+    }
+
+    #[test]
+    fn manual_is_exact_and_floor_raises_start() {
+        let t = tempfile::tempdir().unwrap();
+        fake(t.path(), 60, "Charging");
+        let mut a = act(t.path());
+        let m = Thresholds { start: 10, end: 60 };
+        assert!(matches!(
+            a.apply_manual(m, 0).unwrap(),
+            Outcome::Wrote { .. }
+        ));
+        assert_eq!(a.current(), Some(m));
+        put(t.path(), "class/power_supply/BAT0/capacity", "15");
+        let floored = Thresholds { start: 25, end: 60 };
+        assert_eq!(
+            a.apply_manual(m, 1).unwrap(),
+            Outcome::Floor { to: floored }
+        );
+        assert_eq!(a.current(), Some(floored));
+        // Below its start already: charging is due, so written as set.
+        put(t.path(), "class/power_supply/BAT0/capacity", "5");
+        a.apply_manual(m, 2).unwrap();
+        assert_eq!(a.current(), Some(m));
     }
 
     #[test]
