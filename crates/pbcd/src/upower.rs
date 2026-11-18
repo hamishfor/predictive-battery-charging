@@ -14,6 +14,7 @@
 //! With `upower_switch = false`, pbcd pauses while UPower's limit is on, so the
 //! two don't fight.
 
+use crate::alert::Pause;
 use zbus::proxy;
 
 #[proxy(
@@ -49,8 +50,8 @@ pub async fn limit_enabled(dev: &DeviceProxy<'_>) -> Option<bool> {
 pub enum Verdict {
     /// pbcd controls charging.
     Run,
-    /// pbcd must not write. The string says why, for the UI.
-    Pause(String),
+    /// pbcd must not write.
+    Pause(Pause),
 }
 
 /// Decide from the switch mode and UPower's limit (`None`: UPower absent, or no threshold support).
@@ -59,12 +60,8 @@ pub fn verdict(switch: bool, limit: Option<bool>) -> Verdict {
         // No UPower switch available: there's nothing to follow, so run.
         (_, None) => Verdict::Run,
         (true, Some(true)) => Verdict::Run,
-        (true, Some(false)) => Verdict::Pause(
-            "Off: \"Maximize Charge\" is selected in Settings → Power → Battery Charging".into(),
-        ),
-        (false, Some(true)) => Verdict::Pause(
-            "UPower's charge limit is on (Settings → Power → Preserve Battery Health). pbcd won't write thresholds until it's off".into(),
-        ),
+        (true, Some(false)) => Verdict::Pause(Pause::MaximizeCharge),
+        (false, Some(true)) => Verdict::Pause(Pause::UpowerLimitOn),
         (false, Some(false)) => Verdict::Run,
     }
 }
@@ -76,15 +73,16 @@ mod tests {
     #[test]
     fn gnome_switch() {
         assert_eq!(verdict(true, Some(true)), Verdict::Run);
-        assert!(
-            matches!(verdict(true, Some(false)), Verdict::Pause(m) if m.contains("Maximize Charge"))
-        );
+        assert!(verdict(true, Some(false)) == Verdict::Pause(Pause::MaximizeCharge));
         assert_eq!(verdict(true, None), Verdict::Run);
     }
 
     #[test]
     fn legacy_yield() {
-        assert!(matches!(verdict(false, Some(true)), Verdict::Pause(_)));
+        assert_eq!(
+            verdict(false, Some(true)),
+            Verdict::Pause(Pause::UpowerLimitOn)
+        );
         assert_eq!(verdict(false, Some(false)), Verdict::Run);
         assert_eq!(verdict(false, None), Verdict::Run);
     }

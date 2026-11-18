@@ -1,4 +1,5 @@
 mod actuator;
+mod alert;
 mod config;
 mod dbus;
 mod history;
@@ -82,7 +83,7 @@ pub struct Ctl {
     /// Set when Predictive Battery Charging is switched off (GNOME "Maximize Charge"), or when
     /// another tool owns the thresholds. pbcd then writes nothing, apart from
     /// one release to 0/100 when the pause starts.
-    pub paused: Mutex<Option<String>>,
+    pub paused: Mutex<Option<alert::Pause>>,
     /// Woken by D-Bus methods (override), so the loop re-decides straight away.
     pub kick: Notify,
     pub profile: Option<String>,
@@ -202,7 +203,7 @@ impl Ctl {
                     .lock()
                     .await
                     .alerts
-                    .push(format!("write failed: {e}"));
+                    .push(alert::Alert::WriteFailed(e.to_string()).to_string());
             }
         }
         drop(act);
@@ -512,7 +513,7 @@ async fn main() -> Result<()> {
                 };
                 for alert in alerts {
                     tracing::warn!(?alert, "actuator alert");
-                    ctl.core.lock().await.alerts.push(format!("{alert:?}"));
+                    ctl.core.lock().await.alerts.push(alert.to_string());
                 }
                 ctl.step().await?;
             }
@@ -712,7 +713,7 @@ async fn check_upower(ctl: &Ctl, d: &upower::DeviceProxy<'_>, switch: bool) {
             }
         }
         upower::Verdict::Pause(why) => {
-            if p.as_deref() != Some(why.as_str()) {
+            if *p != Some(why) {
                 tracing::info!("{why}: pausing");
                 // With the GNOME switch, "off" means charge normally. UPower has
                 // already written 0/100 when it disabled its limit, but make sure,
@@ -724,7 +725,11 @@ async fn check_upower(ctl: &Ctl, d: &upower::DeviceProxy<'_>, switch: bool) {
                         }
                     }
                 } else {
-                    ctl.core.lock().await.alerts.push(why.clone());
+                    ctl.core
+                        .lock()
+                        .await
+                        .alerts
+                        .push(alert::Alert::UpowerLimitOn.to_string());
                 }
                 *p = Some(why);
                 drop(p);

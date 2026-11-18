@@ -17,6 +17,7 @@
 //! - Batteries are re-discovered on every call, so hot-swapping BAT1 is handled.
 //!   A newly inserted battery gets the current target on the next sample.
 
+use crate::alert::Alert;
 use pbc_hw::profile::ThresholdRules;
 use pbc_hw::thresholds::{apply, Thresholds};
 use pbc_hw::{combine, Battery, BatteryStatus, PowerSnapshot, Profile, SysRoot};
@@ -47,18 +48,6 @@ pub enum Outcome {
     /// Floor rule forced charging to `max_pct`.
     Floor {
         to: Thresholds,
-    },
-}
-
-#[derive(Debug, Clone, PartialEq, serde::Serialize)]
-pub enum Alert {
-    /// On AC, below the end threshold, but not charging this long after a Full write.
-    NotCharging { since: i64, capacity: u8 },
-    /// Something else rewrote our thresholds (UPower, TLP, a user).
-    Overwritten {
-        battery: String,
-        expected: Thresholds,
-        found: Thresholds,
     },
 }
 
@@ -154,7 +143,34 @@ impl Actuator {
         if floored {
             want = ceiling;
         }
+        want.start = self.kick_start(want, bats.first().and_then(|b| b.thresholds()), &combined);
         self.write(&bats, combined, want, floored, now)
+    }
+
+    /// Firmware only resumes below the start threshold, so raising the end with the level
+    /// already between start and end does nothing (85/90 at 86% sits idle). Lift the start
+    /// just above the level until charging is seen; then drop back to the normal gap.
+    fn kick_start(&self, want: Thresholds, cur: Option<Thresholds>, snap: &PowerSnapshot) -> u8 {
+        let Some(cap) = snap.capacity_pct else {
+            return want.start;
+        };
+        if want.start == 0
+            || cap < want.start
+            || cap >= want.end
+            || snap.status == BatteryStatus::Charging
+        {
+            return want.start;
+        }
+        let raising = cur.is_none_or(|c| c.end < want.end);
+        let pending = cur.is_some_and(|c| c.end == want.end && c.start > want.start);
+        if !(raising || pending) {
+            return want.start; // holding; let it drift down to the normal start
+        }
+        let r = &self.profile.thresholds;
+        (cap + 1)
+            .min(want.end.saturating_sub(r.min_gap))
+            .clamp(r.start_min, r.start_max)
+            .max(want.start)
     }
 
     /// As `apply`, for a limit set by hand: these exact thresholds, unless below the
@@ -232,11 +248,17 @@ impl Actuator {
             }
         }
         if outcome != Outcome::Unchanged {
+            // Only when the firmware should start now: below the end, and below the start (0 = always).
+            let due = combined
+                .capacity_pct
+                .filter(|&c| c < want.end && (want.start == 0 || c < want.start));
             if want == FULL || cur_end.is_some_and(|c| want.end > c) {
-                if let Some(c) = combined.capacity_pct {
+                if let Some(c) = due {
                     self.resume_check = Some((now, c));
+                } else {
+                    self.resume_check = None;
                 }
-            } else {
+            } else if cur_end.is_some_and(|c| want.end < c) {
                 self.resume_check = None;
             }
         }
@@ -429,6 +451,65 @@ mod tests {
         let al = a.check(301, true, 300);
         assert!(matches!(al[0], Alert::NotCharging { .. }), "{al:?}");
         assert!(a.check(400, true, 300).is_empty(), "alert only once");
+    }
+
+    #[test]
+    fn raise_above_level_lifts_start() {
+        let t = tempfile::tempdir().unwrap();
+        fake(t.path(), 86, "Not charging");
+        let bat = "class/power_supply/BAT0";
+        put(
+            t.path(),
+            &format!("{bat}/charge_control_start_threshold"),
+            "75",
+        );
+        put(
+            t.path(),
+            &format!("{bat}/charge_control_end_threshold"),
+            "80",
+        );
+        let mut a = act(t.path());
+        let h90 = Target { end: 90 };
+        a.apply(h90, 0).unwrap();
+        assert_eq!(a.current(), Some(Thresholds { start: 87, end: 90 }));
+        a.apply(h90, 60).unwrap();
+        assert_eq!(
+            a.current(),
+            Some(Thresholds { start: 87, end: 90 }),
+            "kept until charging"
+        );
+        put(t.path(), &format!("{bat}/status"), "Charging");
+        a.apply(h90, 120).unwrap();
+        assert_eq!(
+            a.current(),
+            Some(Thresholds { start: 85, end: 90 }),
+            "normal gap once charging"
+        );
+        // Holding at 90 and drifting to 88: no top-up.
+        put(t.path(), &format!("{bat}/status"), "Not charging");
+        put(t.path(), &format!("{bat}/capacity"), "88");
+        assert_eq!(a.apply(h90, 180).unwrap(), Outcome::Unchanged);
+    }
+
+    #[test]
+    fn no_alert_when_firmware_should_not_start() {
+        let t = tempfile::tempdir().unwrap();
+        fake(t.path(), 89, "Not charging");
+        let bat = "class/power_supply/BAT0";
+        put(
+            t.path(),
+            &format!("{bat}/charge_control_start_threshold"),
+            "75",
+        );
+        put(
+            t.path(),
+            &format!("{bat}/charge_control_end_threshold"),
+            "80",
+        );
+        let mut a = act(t.path());
+        a.apply_manual(Thresholds { start: 85, end: 90 }, 0)
+            .unwrap();
+        assert!(a.check(301, true, 300).is_empty());
     }
 
     #[test]
