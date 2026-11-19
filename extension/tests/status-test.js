@@ -51,7 +51,7 @@ check('normal', !v.checked && v.subtitle.startsWith('Charging to 100%'), v);
 
 v = present({...base, state: 'normal', prediction: null, prediction_source: null, charge_to: 100, sessions: 13}, now);
 check('learning charges to 100', v.subtitle.startsWith('Charging to 100%'), v.subtitle);
-check('learning explained', v.detail.some(d => d === 'Learning your routine · 13 charges so far'), v.detail);
+check('normal has no detail', v.detail.length === 0, v.detail);
 
 v = present({...base, state: 'holding', prediction_source: 'learned', charge_to: 85, prediction: {...base.prediction, confidence: 0.62}}, now);
 check('graded hold shows level', v.subtitle === 'Holding at 85%' && v.headline.includes('full by tomorrow'), v);

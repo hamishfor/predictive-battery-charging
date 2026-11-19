@@ -79,8 +79,6 @@ export function present(st, now = new Date()) {
     // The current charge limit: `max`, a hold below it, or 100 for "charge to full".
     const limit = Number.isInteger(st.charge_to) ? st.charge_to : max;
     const conf = Number.isFinite(st.prediction?.confidence) ? Math.round(st.prediction.confidence * 100) : null;
-    // No learned prediction yet. A schedule alone never holds.
-    const learning = !st.prediction_source;
     const detail = [];
     // `subtitle` fits the narrow tile. `headline` is the menu header's longer version.
     let subtitle;
@@ -128,8 +126,6 @@ export function present(st, now = new Date()) {
             break;
         case 'normal':
             subtitle = withCap(`Charging to ${max}%`);
-            if (learning)
-                detail.push(`Learning your routine · ${charges(st.sessions)} so far`);
             break;
         case 'unplugged':
         default:
